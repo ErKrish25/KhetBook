@@ -17,26 +17,44 @@ import Settings from './components/Settings';
 export type Tab = 'dashboard' | 'billing' | 'ledger' | 'inventory' | 'reports' | 'settings';
 
 export default function App() {
-  const { user, role, member, setUser, setRole, setMember, isLoading, setLoading, logout } = useAuthStore();
+  const { user, role, member, setUser, setRole, setMember, setOwnerId, isLoading, setLoading, logout } = useAuthStore();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) {
-        setUser(session.user);
-        setRole('owner');
+        const u = session.user;
+        setUser(u);
+        // Check if this is a family member by looking at user_metadata
+        const meta = u.user_metadata;
+        if (meta?.role === 'family_member' && meta?.owner_id) {
+          setRole('family_member');
+          setOwnerId(meta.owner_id);
+        } else {
+          setRole('owner');
+          setOwnerId(u.id);
+        }
       }
       setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session) {
-        setUser(session.user);
-        setRole('owner');
+        const u = session.user;
+        setUser(u);
+        const meta = u.user_metadata;
+        if (meta?.role === 'family_member' && meta?.owner_id) {
+          setRole('family_member');
+          setOwnerId(meta.owner_id);
+        } else {
+          setRole('owner');
+          setOwnerId(u.id);
+        }
       } else {
         setUser(null);
         setRole(null);
         setMember(null);
+        setOwnerId(null);
       }
       setLoading(false);
     });
@@ -61,9 +79,9 @@ export default function App() {
   }
 
   const navItems = [
-    { id: 'dashboard', icon: 'dashboard', label: 'Home', roles: ['owner'] },
-    { id: 'billing', icon: 'receipt_long', label: 'Billing', roles: ['owner'] },
-    { id: 'ledger', icon: 'menu_book', label: 'Ledger', roles: ['owner'] },
+    { id: 'dashboard', icon: 'dashboard', label: 'Home', roles: ['owner', 'family_member'] },
+    { id: 'billing', icon: 'receipt_long', label: 'Billing', roles: ['owner', 'family_member'] },
+    { id: 'ledger', icon: 'menu_book', label: 'Ledger', roles: ['owner', 'family_member'] },
     { id: 'inventory', icon: 'inventory_2', label: 'Stock', roles: ['owner', 'family_member'] },
     { id: 'reports', icon: 'assessment', label: 'Reports', roles: ['owner'] },
   ].filter(item => item.roles.includes(role || ''));

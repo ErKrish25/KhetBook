@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { useAuthStore } from './store';
 import { motion, AnimatePresence } from 'motion/react';
+import { useSwipeable } from 'react-swipeable';
 import { cn } from './lib/utils';
 import khetbookIcon from './assets/khetbook-icon.png';
 
@@ -13,54 +14,71 @@ import Inventory from './components/Inventory';
 import Reports from './components/Reports';
 import Auth from './components/Auth';
 import Settings from './components/Settings';
+import FamilyHome from './components/FamilyHome';
 
 export type Tab = 'dashboard' | 'billing' | 'ledger' | 'inventory' | 'reports' | 'settings';
 
 export default function App() {
-  const { user, role, member, setUser, setRole, setMember, setOwnerId, isLoading, setLoading, logout } = useAuthStore();
+  const { user, member, role, setUser, setMember, setRole, setOwnerId } = useAuthStore();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  const [isLoading, setLoading] = useState(true);
 
+  // Restore session
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
+      // Check for family session
+      const isFamily = localStorage.getItem('khetbook_family_session') === 'true';
+      const familyPinData = localStorage.getItem('khetbook_family_pin');
+
       if (session) {
-        const u = session.user;
-        setUser(u);
-        // Check if this is a family member by looking at user_metadata
-        const meta = u.user_metadata;
-        if (meta?.role === 'family_member' && meta?.owner_id) {
-          setRole('family_member');
-          setOwnerId(meta.owner_id);
+        setUser(session.user);
+        if (isFamily && familyPinData) {
+          try {
+            const { ownerId } = JSON.parse(familyPinData);
+            setRole('family_member');
+            setOwnerId(ownerId);
+          } catch {
+            setRole('owner');
+            setOwnerId(session.user.id);
+          }
         } else {
           setRole('owner');
-          setOwnerId(u.id);
+          setOwnerId(session.user.id);
         }
       }
       setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      const isFamily = localStorage.getItem('khetbook_family_session') === 'true';
+      const familyPinData = localStorage.getItem('khetbook_family_pin');
+
       if (session) {
-        const u = session.user;
-        setUser(u);
-        const meta = u.user_metadata;
-        if (meta?.role === 'family_member' && meta?.owner_id) {
-          setRole('family_member');
-          setOwnerId(meta.owner_id);
+        setUser(session.user);
+        if (isFamily && familyPinData) {
+          try {
+            const { ownerId } = JSON.parse(familyPinData);
+            setRole('family_member');
+            setOwnerId(ownerId);
+          } catch {
+            setRole('owner');
+            setOwnerId(session.user.id);
+          }
         } else {
           setRole('owner');
-          setOwnerId(u.id);
+          setOwnerId(session.user.id);
         }
       } else {
         setUser(null);
         setRole(null);
-        setMember(null);
         setOwnerId(null);
+        localStorage.removeItem('khetbook_family_session');
       }
       setLoading(false);
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [setOwnerId, setRole, setUser]);
 
   if (isLoading) {
     return (
@@ -78,6 +96,11 @@ export default function App() {
     return <Auth />;
   }
 
+  // Restrict Family to FamilyHome
+  if (role === 'family_member') {
+    return <FamilyHome />;
+  }
+
   const navItems = [
     { id: 'dashboard', icon: 'dashboard', label: 'Home', roles: ['owner', 'family_member'] },
     { id: 'billing', icon: 'receipt_long', label: 'Billing', roles: ['owner', 'family_member'] },
@@ -86,8 +109,27 @@ export default function App() {
     { id: 'reports', icon: 'assessment', label: 'Reports', roles: ['owner'] },
   ].filter(item => item.roles.includes(role || ''));
 
+  const swipeHandlers = useSwipeable({
+    onSwipedLeft: () => {
+      // Swiping left moves to the next tab (Right)
+      const currentIndex = navItems.findIndex(item => item.id === activeTab);
+      if (currentIndex >= 0 && currentIndex < navItems.length - 1) {
+        setActiveTab(navItems[currentIndex + 1].id as Tab);
+      }
+    },
+    onSwipedRight: () => {
+      // Swiping right moves to the previous tab (Left)
+      const currentIndex = navItems.findIndex(item => item.id === activeTab);
+      if (currentIndex > 0) {
+        setActiveTab(navItems[currentIndex - 1].id as Tab);
+      }
+    },
+    preventScrollOnSwipe: true,
+    trackMouse: false
+  });
+
   return (
-    <div className="min-h-screen bg-[#fafaf9] text-stone-800 font-body pb-24">
+    <div {...swipeHandlers} className="min-h-screen bg-[#fafaf9] text-stone-800 font-body pb-24 overflow-x-hidden">
       {/* TopAppBar */}
       <header className="fixed top-0 w-full z-50 bg-white/90 backdrop-blur-md flex justify-between items-center px-5 h-14 border-b border-stone-100 pt-safe">
         <div className="flex items-center gap-3">

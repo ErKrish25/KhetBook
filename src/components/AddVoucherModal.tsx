@@ -43,7 +43,7 @@ export default function AddVoucherModal({ isOpen, onClose, onSuccess, initialTyp
 
   const fetchParties = async () => {
     const { data } = await supabase.from('parties').select('id, name').eq('user_id', user?.id).order('name');
-    if (data) setParties(data);
+    if (data) setParties(data as Partial<Party>[] as Party[]);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

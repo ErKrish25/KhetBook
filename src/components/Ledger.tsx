@@ -5,6 +5,7 @@ import { cn, formatCurrency } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import AddPartyModal from './AddPartyModal';
 import ConfirmModal from './ConfirmModal';
+import EditTransactionModal from './EditTransactionModal';
 import { useAuthStore } from '../store';
 
 type LedgerView = 'list' | 'detail';
@@ -22,6 +23,9 @@ export default function Ledger() {
   const [view, setView] = useState<LedgerView>('list');
   const [selectedParty, setSelectedParty] = useState<Party | null>(null);
   const [partyTransactions, setPartyTransactions] = useState<any[]>([]);
+
+  // Edit transaction
+  const [editingTx, setEditingTx] = useState<any | null>(null);
 
   // Edit party
   const [editMode, setEditMode] = useState(false);
@@ -310,7 +314,11 @@ export default function Ledger() {
                   const st = statusMap[tx.type] || statusMap.sale;
 
                   return (
-                    <div key={tx.id} className="bg-white rounded-xl border border-stone-200/60 p-3.5 flex items-center justify-between">
+                    <div
+                      key={tx.id}
+                      onClick={() => setEditingTx(tx)}
+                      className="bg-white rounded-xl border border-stone-200/60 p-3.5 flex items-center justify-between cursor-pointer active:scale-[0.98] transition-all"
+                    >
                       <div className="flex items-center gap-3">
                         <div className={cn("w-9 h-9 rounded-full flex items-center justify-center", st.color.split(' ')[0])}>
                           <span className={cn("material-symbols-outlined text-lg", st.color.split(' ')[1])}>{st.icon}</span>
@@ -328,12 +336,15 @@ export default function Ledger() {
                           </p>
                         </div>
                       </div>
-                      <span className={cn(
-                        "text-sm font-bold",
-                        tx.isIncoming ? "text-emerald-700" : "text-red-600"
-                      )}>
-                        {tx.isIncoming ? '+' : '-'}{formatCurrency(tx.amount)}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={cn(
+                          "text-sm font-bold",
+                          tx.isIncoming ? "text-emerald-700" : "text-red-600"
+                        )}>
+                          {tx.isIncoming ? '+' : '-'}{formatCurrency(tx.amount)}
+                        </span>
+                        <span className="material-symbols-outlined text-stone-300 text-sm">edit</span>
+                      </div>
                     </div>
                   );
                 })}
@@ -345,6 +356,13 @@ export default function Ledger() {
             )}
           </section>
         )}
+
+        <EditTransactionModal
+          isOpen={!!editingTx}
+          transaction={editingTx}
+          onClose={() => setEditingTx(null)}
+          onSaved={() => { if (selectedParty) openPartyDetail(selectedParty); }}
+        />
 
         <ConfirmModal
           isOpen={!!deleteId}

@@ -51,52 +51,47 @@ export default function Settings() {
     }
   };
 
-  const fetchFarmPin = async () => {
-    const { data } = await supabase
-      .from('farm_pins')
-      .select('pin')
-      .eq('owner_id', user?.id)
-      .eq('is_active', true)
-      .single();
-
-    if (data) setFarmPin(data.pin);
+  const fetchFarmPin = () => {
+    const stored = localStorage.getItem('khetbook_family_pin');
+    if (stored) {
+      try {
+        const { pin } = JSON.parse(stored);
+        setFarmPin(pin);
+      } catch { /* ignore */ }
+    }
   };
 
   const generatePin = async () => {
     setPinLoading(true);
-    // Generate a random 6-digit PIN
     const newPin = Math.floor(100000 + Math.random() * 900000).toString();
 
-    // Deactivate any existing PINs for this owner
-    await supabase
-      .from('farm_pins')
-      .update({ is_active: false })
-      .eq('owner_id', user?.id);
+    // Get current session to store refresh_token for family access
+    const { data: sessionData } = await supabase.auth.getSession();
+    const session = sessionData?.session;
 
-    // Insert new PIN
-    const { error } = await supabase
-      .from('farm_pins')
-      .insert({
-        owner_id: user?.id,
-        pin: newPin,
-        farm_name: farmDetails.name || 'My Farm',
-        is_active: true,
-      });
-
-    if (!error) {
-      setFarmPin(newPin);
-      setShowPin(true);
-    } else {
-      alert('Failed to generate PIN: ' + error.message);
+    if (!session) {
+      alert('Could not get session. Please log in again.');
+      setPinLoading(false);
+      return;
     }
+
+    // Store PIN + session in localStorage
+    localStorage.setItem('khetbook_family_pin', JSON.stringify({
+      pin: newPin,
+      ownerId: user?.id,
+      session: {
+        refresh_token: session.refresh_token,
+      },
+    }));
+
+    setFarmPin(newPin);
+    setShowPin(true);
     setPinLoading(false);
   };
 
-  const deactivatePin = async () => {
-    await supabase
-      .from('farm_pins')
-      .update({ is_active: false })
-      .eq('owner_id', user?.id);
+  const deactivatePin = () => {
+    localStorage.removeItem('khetbook_family_pin');
+    localStorage.removeItem('khetbook_family_session');
     setFarmPin(null);
     setShowPin(false);
   };

@@ -53,112 +53,103 @@ export default function Auth() {
     setMessage(null);
 
     try {
-      // Step 1: Look up the PIN in the farm_pins table
-      const { data: pinData, error: pinError } = await supabase
-        .from('farm_pins')
-        .select('owner_id, farm_name')
-        .eq('pin', pin)
-        .eq('is_active', true)
-        .single();
-
-      if (pinError || !pinData) {
-        setMessage({ type: 'error', text: 'Invalid PIN. Please check with the farm owner.' });
+      // Look up Family PIN from localStorage
+      const storedData = localStorage.getItem('khetbook_family_pin');
+      if (!storedData) {
+        setMessage({ type: 'error', text: 'No Family PIN has been set up on this device yet. The farm owner must first generate a PIN from Settings.' });
         setIsLoading(false);
         return;
       }
 
-      const ownerId = pinData.owner_id;
-      const farmName = pinData.farm_name || 'Farm';
+      const { pin: savedPin, ownerId, session } = JSON.parse(storedData);
 
-      // Step 2: Create a derived family email and sign in (or sign up)
-      const familyEmail = `family_${ownerId.substring(0, 8)}_${pin}@khetbook.local`;
-      const familyPassword = `kb_${pin}_${ownerId.substring(0, 12)}`;
-
-      // Try sign in first
-      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-        email: familyEmail,
-        password: familyPassword,
-      });
-
-      if (signInData?.user) {
-        // Existing family account — log in
-        setUser(signInData.user);
-        setRole('family_member');
-        setOwnerId(ownerId);
+      if (pin !== savedPin) {
+        setMessage({ type: 'error', text: 'Incorrect PIN. Please try again.' });
         setIsLoading(false);
         return;
       }
 
-      // If sign in failed, create a new family account
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email: familyEmail,
-        password: familyPassword,
-        options: {
-          data: {
-            role: 'family_member',
-            owner_id: ownerId,
-            farm_name: farmName,
-          }
-        }
-      });
-
-      if (signUpError) {
-        setMessage({ type: 'error', text: 'Failed to create family account. Please try again.' });
-        setIsLoading(false);
-        return;
-      }
-
-      if (signUpData?.user) {
-        // Auto-login after sign up
-        const { data: loginData } = await supabase.auth.signInWithPassword({
-          email: familyEmail,
-          password: familyPassword,
+      // Restore the owner's session so Supabase RLS works
+      if (session?.refresh_token) {
+        const { data, error } = await supabase.auth.refreshSession({
+          refresh_token: session.refresh_token,
         });
 
-        if (loginData?.user) {
-          setUser(loginData.user);
-          setRole('family_member');
-          setOwnerId(ownerId);
-        } else {
-          setMessage({ type: 'error', text: 'Account created! Please enter PIN again to log in.' });
+        if (error || !data.session) {
+          setMessage({ type: 'error', text: 'Session expired. The farm owner needs to log in and regenerate the PIN.' });
+          setIsLoading(false);
+          return;
         }
+
+        // Mark this as a family session
+        localStorage.setItem('khetbook_family_session', 'true');
+
+        setUser(data.session.user);
+        setRole('family_member');
+        setOwnerId(ownerId);
+      } else {
+        setMessage({ type: 'error', text: 'PIN data is corrupted. The farm owner needs to regenerate the PIN.' });
       }
     } catch (err: any) {
-      setMessage({ type: 'error', text: err.message || 'Something went wrong.' });
+      setMessage({ type: 'error', text: 'Something went wrong. Please try again.' });
     }
 
     setIsLoading(false);
   };
 
   return (
-    <div className="min-h-screen bg-[#fafaf9] flex items-center justify-center p-4 font-body">
-      <div className="w-full max-w-sm">
-        {/* Logo */}
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="text-center mb-8"
-        >
-          <div className="w-16 h-16 mx-auto mb-4">
-            <img src={khetbookIcon} alt="Khetbook" className="w-full h-full object-contain" />
-          </div>
-          <h1 className="text-2xl font-headline font-extrabold text-[#1b4332] tracking-tight mb-1">Khetbook</h1>
-          <p className="text-sm text-stone-400">Farm accounting made simple.</p>
-        </motion.div>
+    <div className="min-h-screen bg-[#f6f4ef] font-body text-stone-800">
+      <div className="relative overflow-hidden">
+        <div className="absolute inset-x-0 top-0 h-[320px] bg-[radial-gradient(circle_at_top,#d9efe1_0%,#f6f4ef_60%,#f6f4ef_100%)]" />
+        <div className="absolute -top-16 right-[-72px] h-48 w-48 rounded-full bg-emerald-200/35 blur-3xl" />
+        <div className="absolute top-24 left-[-56px] h-32 w-32 rounded-full bg-stone-200/60 blur-3xl" />
 
-        {/* Card */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="bg-white rounded-2xl border border-stone-200/60 p-6 shadow-sm"
-        >
-          {/* Owner / Family Toggle */}
-          <div className="flex bg-stone-100 p-1 rounded-xl mb-6">
+        <div className="relative mx-auto flex min-h-screen w-full max-w-md flex-col px-4 pb-8 pt-8">
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-5 flex items-center justify-between rounded-[28px] border border-white/70 bg-white/75 px-4 py-3 shadow-[0_20px_50px_-32px_rgba(27,67,50,0.55)] backdrop-blur"
+          >
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#e7f3ec] shadow-inner">
+                <img src={khetbookIcon} alt="Khetbook" className="h-8 w-8 object-contain" />
+              </div>
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#4f7a67]">Khetbook</p>
+                <h1 className="font-headline text-lg font-extrabold tracking-tight text-[#1b4332]">Farm accounting</h1>
+              </div>
+            </div>
+            <div className="rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-emerald-700">
+              Secure Access
+            </div>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.05 }}
+            className="mb-5 rounded-[30px] bg-[#1b4332] px-5 py-6 text-white shadow-[0_28px_60px_-32px_rgba(27,67,50,0.8)]"
+          >
+            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.28em] text-emerald-200/80">Welcome Back</p>
+            <h2 className="font-headline text-[28px] font-extrabold leading-[1.05] tracking-tight">
+              Manage farm cashflow, stock, and family access in one place.
+            </h2>
+            <p className="mt-3 max-w-[28ch] text-sm leading-6 text-emerald-50/80">
+              Sign in as the farm owner or use the family PIN to reach shared inventory tools with the same Khetbook look and feel.
+            </p>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            className="rounded-[30px] border border-stone-200/80 bg-white/95 p-4 shadow-[0_24px_60px_-36px_rgba(36,48,38,0.4)] backdrop-blur"
+          >
+            <div className="mb-4 flex bg-stone-100 p-1 rounded-2xl">
             <button
               onClick={() => { setIsFamilyLogin(false); setMessage(null); }}
               className={cn(
-                "flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5",
+                "flex-1 rounded-xl px-3 py-2.5 text-sm font-bold transition-all flex items-center justify-center gap-1.5",
                 !isFamilyLogin ? "bg-white shadow-sm text-[#1b4332]" : "text-stone-400"
               )}
             >
@@ -168,7 +159,7 @@ export default function Auth() {
             <button
               onClick={() => { setIsFamilyLogin(true); setMessage(null); }}
               className={cn(
-                "flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5",
+                "flex-1 rounded-xl px-3 py-2.5 text-sm font-bold transition-all flex items-center justify-center gap-1.5",
                 isFamilyLogin ? "bg-white shadow-sm text-[#1b4332]" : "text-stone-400"
               )}
             >
@@ -179,26 +170,26 @@ export default function Auth() {
 
           {isFamilyLogin ? (
             <>
-              {/* Family PIN Form */}
-              <div className="text-center mb-5">
-                <div className="w-12 h-12 mx-auto mb-2 rounded-full bg-emerald-50 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-emerald-600 text-xl">vpn_key</span>
+              <div className="mb-5 rounded-[26px] border border-emerald-100 bg-[linear-gradient(135deg,#f5fbf7_0%,#eef7f1_100%)] p-4">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white shadow-sm">
+                  <span className="material-symbols-outlined text-xl text-emerald-600">vpn_key</span>
                 </div>
-                <p className="text-xs text-stone-400 leading-relaxed">
-                  Ask the farm owner for the <span className="font-bold text-stone-600">6-digit Farm PIN</span> to join their farm account.
+                <h3 className="font-headline text-lg font-extrabold tracking-tight text-[#1b4332]">Family inventory access</h3>
+                <p className="mt-1 text-sm leading-6 text-stone-500">
+                  Enter the <span className="font-bold text-stone-700">6-digit Farm PIN</span> shared by the owner to open the family inventory workspace.
                 </p>
               </div>
 
               <form onSubmit={handleFamilyLogin} className="space-y-4">
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-1.5 block">Farm PIN</label>
+                  <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-stone-400">Farm PIN</label>
                   <input
                     type="password"
                     maxLength={6}
                     value={pin}
                     onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
                     placeholder="● ● ● ● ● ●"
-                    className="w-full bg-stone-50 border-2 border-stone-200 rounded-xl py-4 px-4 text-2xl text-center tracking-[0.5em] font-mono font-bold text-stone-800 focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20 transition-all placeholder:text-stone-300 placeholder:tracking-[0.3em] placeholder:text-lg"
+                    className="w-full rounded-2xl border-2 border-stone-200 bg-stone-50 px-4 py-4 text-center font-mono text-2xl font-bold tracking-[0.5em] text-stone-800 transition-all placeholder:text-lg placeholder:tracking-[0.3em] placeholder:text-stone-300 focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-400/20"
                     required
                     autoFocus
                   />
@@ -206,7 +197,7 @@ export default function Auth() {
                 <button
                   type="submit"
                   disabled={isLoading || pin.length !== 6}
-                  className="w-full py-3.5 bg-[#1b4332] text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20 active:scale-[0.98] transition-all disabled:opacity-50"
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#1b4332] py-3.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/20 transition-all active:scale-[0.98] disabled:opacity-50"
                 >
                   {isLoading ? (
                     <>
@@ -215,23 +206,49 @@ export default function Auth() {
                         transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
                         className="w-4 h-4 border-2 border-white border-t-transparent rounded-full"
                       />
-                      Joining Farm...
+                      Joining...
                     </>
                   ) : (
                     <>
-                      <span className="material-symbols-outlined text-base">login</span>
-                      Join Farm
+                      <span className="material-symbols-outlined text-base">inventory_2</span>
+                      Open Inventory
                     </>
                   )}
                 </button>
               </form>
+
+              <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="rounded-2xl border border-stone-200 bg-stone-50 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-stone-400">Access</p>
+                  <p className="mt-1 text-xs font-semibold text-stone-700">Inventory only</p>
+                </div>
+                <div className="rounded-2xl border border-stone-200 bg-stone-50 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-stone-400">Setup</p>
+                  <p className="mt-1 text-xs font-semibold text-stone-700">Generated in Settings</p>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-blue-100 bg-blue-50 p-3">
+                <p className="text-[11px] font-medium leading-relaxed text-blue-700">
+                  The farm owner needs to generate a Family PIN from Settings first. Family members can then use that PIN on their own phone.
+                </p>
+              </div>
             </>
           ) : (
             <>
-              {/* Owner Login */}
+              <div className="mb-5 rounded-[26px] border border-stone-200 bg-stone-50 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-stone-400">Owner Workspace</p>
+                <h3 className="mt-2 font-headline text-lg font-extrabold tracking-tight text-[#1b4332]">
+                  {isSignUp ? 'Create your farm account' : 'Sign in to continue'}
+                </h3>
+                <p className="mt-1 text-sm leading-6 text-stone-500">
+                  Access billing, ledger, reports, stock management, and farm settings from the same dashboard.
+                </p>
+              </div>
+
               <form onSubmit={handleOwnerAuth} className="space-y-4">
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-1.5 block">Email Address</label>
+                  <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-stone-400">Email Address</label>
                   <div className="relative">
                     <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-lg">mail</span>
                     <input
@@ -245,7 +262,7 @@ export default function Auth() {
                   </div>
                 </div>
                 <div>
-                  <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-1.5 block">Password</label>
+                  <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-widest text-stone-400">Password</label>
                   <div className="relative">
                     <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-lg">lock</span>
                     <input
@@ -262,7 +279,7 @@ export default function Auth() {
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full py-3.5 bg-[#1b4332] text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/20 active:scale-[0.98] transition-all disabled:opacity-50 mt-1"
+                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#1b4332] py-3.5 text-sm font-bold text-white shadow-lg shadow-emerald-900/20 transition-all active:scale-[0.98] disabled:opacity-50"
                 >
                   {isLoading ? (
                     <>
@@ -281,11 +298,11 @@ export default function Auth() {
                   )}
                 </button>
 
-                <div className="text-center pt-1">
+                <div className="rounded-2xl bg-stone-50 px-4 py-3 text-center">
                   <button
                     type="button"
                     onClick={() => { setIsSignUp(!isSignUp); setMessage(null); }}
-                    className="text-xs font-medium text-stone-400 hover:text-[#1b4332] transition-colors"
+                    className="text-xs font-semibold text-stone-500 transition-colors hover:text-[#1b4332]"
                   >
                     {isSignUp ? 'Already have an account? Sign In' : 'Need an account? Sign Up'}
                   </button>
@@ -300,7 +317,7 @@ export default function Auth() {
               initial={{ opacity: 0, y: 5 }}
               animate={{ opacity: 1, y: 0 }}
               className={cn(
-                "mt-4 p-3 rounded-xl text-xs font-medium flex items-center gap-2",
+                "mt-4 flex items-center gap-2 rounded-2xl border p-3 text-xs font-medium",
                 message.type === 'success'
                   ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                   : "bg-red-50 text-red-600 border border-red-200"
@@ -312,9 +329,12 @@ export default function Auth() {
               {message.text}
             </motion.div>
           )}
-        </motion.div>
+          </motion.div>
 
-        <p className="text-center text-[10px] text-stone-300 mt-6">Khetbook v1.0 • Farm Accounting</p>
+          <p className="mt-6 text-center text-[10px] font-medium uppercase tracking-[0.18em] text-stone-400">
+            Khetbook v1.0 • Farm Accounting
+          </p>
+        </div>
       </div>
     </div>
   );

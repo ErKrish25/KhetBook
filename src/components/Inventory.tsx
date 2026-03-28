@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useAuthStore } from '../store';
 import AddItemModal from './AddItemModal';
 import ConfirmModal from './ConfirmModal';
+import EditTransactionModal from './EditTransactionModal';
 
 type StockFilter = 'all' | 'crop' | 'inputs' | 'equipment';
 type StockView = 'list' | 'detail' | 'stockAction';
@@ -41,6 +42,9 @@ export default function Inventory() {
   const [showHarvestForm, setShowHarvestForm] = useState(false);
   const [harvestData, setHarvestData] = useState({ item_id: '', qty: 0, source: '' });
   const [harvestSaving, setHarvestSaving] = useState(false);
+
+  // Edit transaction state
+  const [editingTx, setEditingTx] = useState<any | null>(null);
 
   useEffect(() => {
     fetchItems();
@@ -462,7 +466,14 @@ export default function Inventory() {
                     if (!v) return null;
                     const isSale = v.type === 'sale';
                     return (
-                      <div key={tx.id} className="bg-white rounded-xl border border-stone-200/60 p-3 flex items-center justify-between">
+                      <div
+                        key={tx.id}
+                        onClick={() => {
+                          // Pass the voucher object (with id, voucher_no, type, etc.) to the modal
+                          if (v) setEditingTx({ id: v.id || tx.voucher_id, voucher_no: v.voucher_no, type: v.type, date: v.date, amount: tx.amount, payment_mode: v.payment_mode, notes: '' });
+                        }}
+                        className="bg-white rounded-xl border border-stone-200/60 p-3 flex items-center justify-between cursor-pointer active:scale-[0.98] transition-all"
+                      >
                         <div className="flex items-center gap-3">
                           <div className={cn(
                             "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold",
@@ -480,9 +491,12 @@ export default function Inventory() {
                             </p>
                           </div>
                         </div>
-                        <span className={cn("text-sm font-bold", isSale ? "text-emerald-700" : "text-red-600")}>
-                          ₹{tx.amount?.toLocaleString('en-IN')}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={cn("text-sm font-bold", isSale ? "text-emerald-700" : "text-red-600")}>
+                            ₹{tx.amount?.toLocaleString('en-IN')}
+                          </span>
+                          <span className="material-symbols-outlined text-stone-300 text-sm">edit</span>
+                        </div>
                       </div>
                     );
                   })}
@@ -523,6 +537,13 @@ export default function Inventory() {
             )}
           </>
         )}
+
+        <EditTransactionModal
+          isOpen={!!editingTx}
+          transaction={editingTx}
+          onClose={() => setEditingTx(null)}
+          onSaved={() => { if (selectedItem) openItemDetail(selectedItem); }}
+        />
 
         <ConfirmModal
           isOpen={!!deleteId}

@@ -6,7 +6,7 @@ import { cn } from '../lib/utils';
 import khetbookIcon from '../assets/khetbook-icon.png';
 
 export default function Auth() {
-  const { setUser, setRole, setOwnerId } = useAuthStore();
+  const { setUser, setMember, setRole, setOwnerId } = useAuthStore();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [pin, setPin] = useState('');
@@ -34,7 +34,9 @@ export default function Auth() {
       if (error) {
         setMessage({ type: 'error', text: error.message });
       } else if (data.user) {
+        localStorage.removeItem('khetbook_family_session');
         setUser(data.user);
+        setMember(null);
         setRole('owner');
         setOwnerId(data.user.id);
       }
@@ -85,6 +87,7 @@ export default function Auth() {
         localStorage.setItem('khetbook_family_session', 'true');
 
         setUser(data.session.user);
+        setMember(null);
         setRole('family_member');
         setOwnerId(ownerId);
       } else {
@@ -132,10 +135,10 @@ export default function Auth() {
           >
             <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.28em] text-emerald-200/80">Welcome Back</p>
             <h2 className="font-headline text-[28px] font-extrabold leading-[1.05] tracking-tight">
-              Manage farm cashflow, stock, and family access in one place.
+              Manage farm cashflow, expenses, and family access in one place.
             </h2>
             <p className="mt-3 max-w-[28ch] text-sm leading-6 text-emerald-50/80">
-              Sign in as the farm owner or use the family PIN to reach shared inventory tools with the same Khetbook look and feel.
+              Sign in as the farm owner or use the family PIN to view the shared read-only ledger.
             </p>
           </motion.div>
 
@@ -174,9 +177,9 @@ export default function Auth() {
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-white shadow-sm">
                   <span className="material-symbols-outlined text-xl text-emerald-600">vpn_key</span>
                 </div>
-                <h3 className="font-headline text-lg font-extrabold tracking-tight text-[#1b4332]">Family inventory access</h3>
+                <h3 className="font-headline text-lg font-extrabold tracking-tight text-[#1b4332]">Shared Ledger Access</h3>
                 <p className="mt-1 text-sm leading-6 text-stone-500">
-                  Enter the <span className="font-bold text-stone-700">6-digit Farm PIN</span> shared by the owner to open the family inventory workspace.
+                  Enter the <span className="font-bold text-stone-700">6-digit Farm PIN</span> shared by the owner to open the read-only view.
                 </p>
               </div>
 
@@ -210,8 +213,8 @@ export default function Auth() {
                     </>
                   ) : (
                     <>
-                      <span className="material-symbols-outlined text-base">inventory_2</span>
-                      Open Inventory
+                      <span className="material-symbols-outlined text-base">receipt_long</span>
+                      Open Ledger
                     </>
                   )}
                 </button>
@@ -220,7 +223,7 @@ export default function Auth() {
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <div className="rounded-2xl border border-stone-200 bg-stone-50 p-3">
                   <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-stone-400">Access</p>
-                  <p className="mt-1 text-xs font-semibold text-stone-700">Inventory only</p>
+                  <p className="mt-1 text-xs font-semibold text-stone-700">Read-only ledger</p>
                 </div>
                 <div className="rounded-2xl border border-stone-200 bg-stone-50 p-3">
                   <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-stone-400">Setup</p>
@@ -242,7 +245,7 @@ export default function Auth() {
                   {isSignUp ? 'Create your farm account' : 'Sign in to continue'}
                 </h3>
                 <p className="mt-1 text-sm leading-6 text-stone-500">
-                  Access billing, ledger, reports, stock management, and farm settings from the same dashboard.
+                  Access billing, ledger, reports, entries, and farm settings from the same dashboard.
                 </p>
               </div>
 

@@ -1,20 +1,25 @@
--- Khetbook Database Schema
+-- =============================================
+-- Khetbook Database Schema (Unified)
+-- Run this in Supabase SQL Editor
+-- =============================================
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Drop existing tables to allow clean recreation
+-- Drop existing tables/views to allow clean recreation (BE CAREFUL IN PRODUCTION)
 DROP VIEW IF EXISTS items_family_view;
 DROP TABLE IF EXISTS ledger_entries CASCADE;
 DROP TABLE IF EXISTS voucher_lines CASCADE;
-DROP TABLE IF EXISTS vouchers CASCADE;
 DROP TABLE IF EXISTS inventory_logs CASCADE;
+DROP TABLE IF EXISTS vouchers CASCADE;
+DROP TABLE IF EXISTS ledger_groups CASCADE;
+DROP TABLE IF EXISTS farm_pins CASCADE;
 DROP TABLE IF EXISTS farm_members CASCADE;
 DROP TABLE IF EXISTS items CASCADE;
 DROP TABLE IF EXISTS parties CASCADE;
 DROP TABLE IF EXISTS profiles CASCADE;
 
--- Profiles Table (For Settings)
+-- 1. Profiles Table (For Settings)
 CREATE TABLE profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     farm_name TEXT,
@@ -25,9 +30,42 @@ CREATE TABLE profiles (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Parties Table
+-- 2. Ledger Groups Table (Hierarchical Categories for Income/Expense)
+CREATE TABLE ledger_groups (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+  parent_id UUID REFERENCES ledger_groups(id) ON DELETE CASCADE,
+  icon TEXT DEFAULT 'folder',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 3. Vouchers Table (Core Transactions)
+CREATE TABLE vouchers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    voucher_no TEXT NOT NULL,
+    type TEXT CHECK (type IN ('income', 'expense', 'sale', 'purchase', 'receipt', 'payment', 'journal')),
+    date DATE NOT NULL DEFAULT CURRENT_DATE,
+    amount NUMERIC(15,2) NOT NULL,
+    ledger_group_id UUID REFERENCES ledger_groups(id) ON DELETE SET NULL,
+    notes TEXT,
+    payment_mode TEXT,
+    party_id UUID,
+    due_date DATE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ============================================================================
+-- NOTE: The tables below are legacy tables kept for backward compatibility
+-- during the transition from the general accounting app to the simple
+-- Income/Expense tracker. They may not be actively used.
+-- ============================================================================
+
 CREATE TABLE parties (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     type TEXT CHECK (type IN ('customer', 'supplier', 'bank', 'cash', 'expense')),
@@ -38,9 +76,8 @@ CREATE TABLE parties (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Items (Inventory) Table
 CREATE TABLE items (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     category TEXT CHECK (category IN ('crop', 'fertilizer', 'seed', 'pesticide', 'fuel', 'equipment', 'other')),
@@ -52,14 +89,13 @@ CREATE TABLE items (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Farm Members Table
 CREATE TABLE farm_members (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     display_name TEXT NOT NULL,
     role TEXT CHECK (role IN ('owner', 'family_member')),
-    pin_hash TEXT, -- bcrypt hash of member's 4-digit app PIN
-    invite_pin TEXT, -- 6-digit invite PIN
+    pin_hash TEXT,
+    invite_pin TEXT,
     invite_expires_at TIMESTAMPTZ,
     invite_used BOOLEAN DEFAULT false,
     is_active BOOLEAN DEFAULT true,
@@ -69,9 +105,8 @@ CREATE TABLE farm_members (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Inventory Logs Table
 CREATE TABLE inventory_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     item_id UUID REFERENCES items(id) ON DELETE CASCADE,
     member_id UUID REFERENCES farm_members(id) ON DELETE SET NULL,
@@ -82,25 +117,8 @@ CREATE TABLE inventory_logs (
     changed_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Vouchers Table
-CREATE TABLE vouchers (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
-    voucher_no TEXT NOT NULL,
-    type TEXT CHECK (type IN ('sale', 'purchase', 'receipt', 'payment', 'journal')),
-    date DATE NOT NULL DEFAULT CURRENT_DATE,
-    party_id UUID REFERENCES parties(id) ON DELETE CASCADE,
-    amount NUMERIC(15,2) NOT NULL,
-    payment_mode TEXT,
-    notes TEXT,
-    due_date DATE,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Voucher Lines Table
 CREATE TABLE voucher_lines (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     voucher_id UUID REFERENCES vouchers(id) ON DELETE CASCADE,
     item_id UUID REFERENCES items(id) ON DELETE CASCADE,
     qty NUMERIC(15,3),
@@ -109,9 +127,8 @@ CREATE TABLE voucher_lines (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Ledger Entries Table
 CREATE TABLE ledger_entries (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     voucher_id UUID REFERENCES vouchers(id) ON DELETE CASCADE,
     party_id UUID REFERENCES parties(id) ON DELETE CASCADE,
@@ -122,55 +139,33 @@ CREATE TABLE ledger_entries (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Views
 CREATE VIEW items_family_view AS
 SELECT id, user_id, name, category, unit, current_stock, min_stock, created_at, updated_at
 FROM items;
 
--- RLS Policies (Basic setup, needs refinement based on auth)
+-- =============================================
+-- Row Level Security (RLS) Configuration
+-- =============================================
+
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ledger_groups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vouchers ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE parties ENABLE ROW LEVEL SECURITY;
 ALTER TABLE items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE farm_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_logs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE vouchers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE voucher_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ledger_entries ENABLE ROW LEVEL SECURITY;
 
--- Create policies for authenticated users to only see their own data
-CREATE POLICY "Users can view own profile" ON profiles FOR SELECT USING (auth.uid() = id);
-CREATE POLICY "Users can insert own profile" ON profiles FOR INSERT WITH CHECK (auth.uid() = id);
-CREATE POLICY "Users can update own profile" ON profiles FOR UPDATE USING (auth.uid() = id);
+-- Base Policies (Users see/manage their own data)
+CREATE POLICY "Users can manage own profile" ON profiles FOR ALL USING (auth.uid() = id);
+CREATE POLICY "Users can manage own ledger groups" ON ledger_groups FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Users can manage own vouchers" ON vouchers FOR ALL USING (auth.uid() = user_id);
 
-CREATE POLICY "Users can view own parties" ON parties FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own parties" ON parties FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can update own parties" ON parties FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Users can delete own parties" ON parties FOR DELETE USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can view own items" ON items FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own items" ON items FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can update own items" ON items FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Users can delete own items" ON items FOR DELETE USING (auth.uid() = user_id);
-
-CREATE POLICY "Users can view own vouchers" ON vouchers FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own vouchers" ON vouchers FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can update own vouchers" ON vouchers FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Users can delete own vouchers" ON vouchers FOR DELETE USING (auth.uid() = user_id);
-
+CREATE POLICY "Users can manage own parties" ON parties FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Users can manage own items" ON items FOR ALL USING (auth.uid() = user_id);
 CREATE POLICY "Users can view own voucher lines" ON voucher_lines FOR SELECT USING (
     EXISTS (SELECT 1 FROM vouchers WHERE vouchers.id = voucher_lines.voucher_id AND vouchers.user_id = auth.uid())
 );
-CREATE POLICY "Users can insert own voucher lines" ON voucher_lines FOR INSERT WITH CHECK (
-    EXISTS (SELECT 1 FROM vouchers WHERE vouchers.id = voucher_lines.voucher_id AND vouchers.user_id = auth.uid())
-);
-CREATE POLICY "Users can update own voucher lines" ON voucher_lines FOR UPDATE USING (
-    EXISTS (SELECT 1 FROM vouchers WHERE vouchers.id = voucher_lines.voucher_id AND vouchers.user_id = auth.uid())
-);
-CREATE POLICY "Users can delete own voucher lines" ON voucher_lines FOR DELETE USING (
-    EXISTS (SELECT 1 FROM vouchers WHERE vouchers.id = voucher_lines.voucher_id AND vouchers.user_id = auth.uid())
-);
-
-CREATE POLICY "Users can view own ledger entries" ON ledger_entries FOR SELECT USING (auth.uid() = user_id);
-CREATE POLICY "Users can insert own ledger entries" ON ledger_entries FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can update own ledger entries" ON ledger_entries FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Users can delete own ledger entries" ON ledger_entries FOR DELETE USING (auth.uid() = user_id);
+CREATE POLICY "Users can manage own ledger entries" ON ledger_entries FOR ALL USING (auth.uid() = user_id);

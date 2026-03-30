@@ -1,330 +1,365 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store';
+import { LedgerGroup } from '../types';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion } from 'motion/react';
 
-type ReportView = 'summary' | 'daybook' | 'cashbook';
-type DateRange = 'month' | 'year' | 'all';
+type DateRange = 'month' | 'year' | 'all' | 'custom';
 
 export default function Reports() {
   const { user } = useAuthStore();
-  const [activeView, setActiveView] = useState<ReportView>('summary');
   const [dateRange, setDateRange] = useState<DateRange>('year');
-  const [reportData, setReportData] = useState({
-    income: 0,
-    expenses: 0,
-    netProfit: 0,
-    sales: 0,
-    purchases: 0,
-    receipts: 0,
-    payments: 0,
-    receivables: 0,
-    payables: 0,
-    stockValue: 0,
-    cashInHand: 0,
-    bankBalance: 0,
-    transactions: [] as any[],
-  });
+  const [groups, setGroups] = useState<LedgerGroup[]>([]);
+  const [vouchers, setVouchers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [expandedSection, setExpandedSection] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchReportData();
-  }, [dateRange]);
+  // Custom date range
+  const now = new Date();
+  const [customFrom, setCustomFrom] = useState(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]);
+  const [customTo, setCustomTo] = useState(now.toISOString().split('T')[0]);
 
-  const getDateFilter = () => {
-    const now = new Date();
+  useEffect(() => { fetchData(); }, [dateRange, customFrom, customTo]);
+
+  const getDateRange = (): { from: string; to: string } => {
+    const today = new Date();
     if (dateRange === 'month') {
-      return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+      return {
+        from: new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0],
+        to: today.toISOString().split('T')[0],
+      };
     }
     if (dateRange === 'year') {
-      return new Date(now.getFullYear(), 0, 1).toISOString().split('T')[0];
+      return {
+        from: new Date(today.getFullYear(), 0, 1).toISOString().split('T')[0],
+        to: today.toISOString().split('T')[0],
+      };
     }
-    return '1970-01-01';
+    if (dateRange === 'custom') {
+      return { from: customFrom, to: customTo };
+    }
+    return { from: '1970-01-01', to: today.toISOString().split('T')[0] };
   };
 
-  const fetchReportData = async () => {
+  const fetchData = async () => {
     setIsLoading(true);
-    const fromDate = getDateFilter();
-
-    const { data: vouchers } = await supabase
-      .from('vouchers')
-      .select('*, parties(name)')
-      .eq('user_id', user?.id)
-      .gte('date', fromDate)
-      .order('date', { ascending: false });
-
-    const { data: parties } = await supabase
-      .from('parties')
-      .select('*')
-      .eq('user_id', user?.id);
-
-    const { data: items } = await supabase
-      .from('items')
-      .select('*')
-      .eq('user_id', user?.id);
-
-    if (vouchers && parties && items) {
-      let sales = 0, purchases = 0, receipts = 0, payments = 0;
-      let cashInHand = 0, bankBalance = 0;
-
-      vouchers.forEach(v => {
-        if (v.type === 'sale') sales += v.amount;
-        if (v.type === 'purchase') purchases += v.amount;
-        if (v.type === 'receipt') {
-          receipts += v.amount;
-          if (v.payment_mode === 'Cash') cashInHand += v.amount;
-          else bankBalance += v.amount;
-        }
-        if (v.type === 'payment') {
-          payments += v.amount;
-          if (v.payment_mode === 'Cash') cashInHand -= v.amount;
-          else bankBalance -= v.amount;
-        }
-      });
-
-      let receivables = 0, payables = 0;
-      parties.forEach(p => {
-        if (p.balance_type === 'dr') receivables += p.opening_balance;
-        if (p.balance_type === 'cr') payables += p.opening_balance;
-      });
-
-      let stockValue = 0;
-      items.forEach(i => { stockValue += (i.current_stock * (i.rate || 0)); });
-
-      const income = sales + receipts;
-      const expenses = purchases + payments;
-
-      setReportData({
-        sales, purchases, receipts, payments,
-        income, expenses,
-        netProfit: income - expenses,
-        receivables, payables, stockValue,
-        cashInHand, bankBalance,
-        transactions: vouchers,
-      });
-    }
+    const { from, to } = getDateRange();
+    const [{ data: g }, { data: v }] = await Promise.all([
+      supabase.from('ledger_groups').select('*').eq('user_id', user?.id).order('name'),
+      supabase.from('vouchers').select('*').eq('user_id', user?.id).gte('date', from).lte('date', to).order('date', { ascending: false }),
+    ]);
+    if (g) setGroups(g);
+    if (v) setVouchers(v);
     setIsLoading(false);
   };
 
-  const getTimeAgo = (dateStr: string) => {
-    return new Date(dateStr).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' });
+  // Tree helpers
+  const getChildren = (parentId: string | null) => groups.filter(g => g.parent_id === parentId);
+  const getAllDescendantIds = (groupId: string): string[] => {
+    const ids = [groupId];
+    for (const child of getChildren(groupId)) ids.push(...getAllDescendantIds(child.id));
+    return ids;
   };
+  const getGroupTotal = (groupId: string): number => {
+    const allIds = getAllDescendantIds(groupId);
+    return vouchers.filter(v => allIds.includes(v.ledger_group_id)).reduce((s, v) => s + v.amount, 0);
+  };
+
+  // Computations
+  const totalIncome = useMemo(() =>
+    groups.filter(g => g.type === 'income' && !g.parent_id).reduce((s, g) => s + getGroupTotal(g.id), 0),
+    [groups, vouchers]
+  );
+  const totalExpense = useMemo(() =>
+    groups.filter(g => g.type === 'expense' && !g.parent_id).reduce((s, g) => s + getGroupTotal(g.id), 0),
+    [groups, vouchers]
+  );
+  const netProfit = totalIncome - totalExpense;
+  const totalEntries = vouchers.length;
+
+  // Sorted groups
+  const topExpenseGroups = useMemo(() =>
+    groups.filter(g => g.type === 'expense' && !g.parent_id)
+      .map(g => ({ ...g, total: getGroupTotal(g.id) }))
+      .sort((a, b) => b.total - a.total),
+    [groups, vouchers]
+  );
+
+  const topIncomeGroups = useMemo(() =>
+    groups.filter(g => g.type === 'income' && !g.parent_id)
+      .map(g => ({ ...g, total: getGroupTotal(g.id) }))
+      .sort((a, b) => b.total - a.total),
+    [groups, vouchers]
+  );
+
+  // CSS donut segments
+  const buildDonut = (items: { name: string; total: number; color: string }[]) => {
+    const total = items.reduce((s, i) => s + i.total, 0);
+    if (total === 0) return { segments: 'conic-gradient(#e7e5e4 0deg 360deg)', items: [] };
+    let acc = 0;
+    const stops: string[] = [];
+    const enhanced = items.map(item => {
+      const pct = (item.total / total) * 100;
+      const start = acc;
+      acc += pct;
+      stops.push(`${item.color} ${start}% ${acc}%`);
+      return { ...item, pct };
+    });
+    return { segments: `conic-gradient(${stops.join(', ')})`, items: enhanced };
+  };
+
+  const EXPENSE_COLORS = ['#ef4444', '#f97316', '#eab308', '#84cc16', '#06b6d4', '#8b5cf6', '#ec4899', '#78716c'];
+  const INCOME_COLORS = ['#10b981', '#14b8a6', '#06b6d4', '#3b82f6', '#8b5cf6'];
+
+  const expenseDonut = buildDonut(topExpenseGroups.map((g, i) => ({ name: g.name, total: g.total, color: EXPENSE_COLORS[i % EXPENSE_COLORS.length] })));
+  const incomeDonut = buildDonut(topIncomeGroups.map((g, i) => ({ name: g.name, total: g.total, color: INCOME_COLORS[i % INCOME_COLORS.length] })));
+
+  const formatDate = (d: string) => new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' });
+
+  const { from: rangeFrom, to: rangeTo } = getDateRange();
+  const rangeLabel = dateRange === 'month' ? 'This Month' : dateRange === 'year' ? 'This Year' : dateRange === 'all' ? 'All Time' : `${formatDate(customFrom)} — ${formatDate(customTo)}`;
 
   return (
     <div className="space-y-5 pb-8">
-      {/* Date Range Selector */}
+      {/* Date Range */}
       <div className="flex gap-1 bg-stone-100 p-1 rounded-full">
-        {[
-          { id: 'month' as DateRange, label: 'This Month' },
-          { id: 'year' as DateRange, label: 'This Year' },
-          { id: 'all' as DateRange, label: 'All Time' },
-        ].map(range => (
-          <button
-            key={range.id}
-            onClick={() => setDateRange(range.id)}
-            className={cn(
-              "flex-1 py-2 rounded-full text-sm font-bold transition-all",
-              dateRange === range.id
-                ? "bg-[#1b4332] text-white shadow-sm"
-                : "text-stone-500"
-            )}
-          >
-            {range.label}
-          </button>
+        {([
+          { id: 'month' as DateRange, label: 'Month' },
+          { id: 'year' as DateRange, label: 'Year' },
+          { id: 'all' as DateRange, label: 'All' },
+          { id: 'custom' as DateRange, label: 'Custom' },
+        ]).map(range => (
+          <button key={range.id} onClick={() => setDateRange(range.id)} className={cn("flex-1 py-2 rounded-full text-xs font-bold transition-all", dateRange === range.id ? "bg-[#1b4332] text-white shadow-sm" : "text-stone-500")}>{range.label}</button>
         ))}
       </div>
 
-      {/* Profit & Loss Hero */}
-      <motion.section
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="bg-[#1b4332] text-white p-5 rounded-3xl relative overflow-hidden"
-      >
-        <div className="absolute -right-8 -top-8 w-32 h-32 bg-white/5 rounded-full"></div>
-        <div className="absolute right-4 top-4 opacity-20">
-          <span className="material-symbols-outlined text-4xl">monitoring</span>
-        </div>
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-white/60 mb-1">Net Profit (Estimated)</p>
-        <h2 className="text-[34px] font-headline font-extrabold leading-tight mb-4">
-          <span className="text-white/60 text-2xl mr-0.5">₹</span>{reportData.netProfit.toLocaleString('en-IN')}
-        </h2>
-
-        <div className="space-y-2">
-          <div className="flex justify-between items-center pb-2 border-b border-white/15">
-            <span className="text-xs text-white/70">Total Income</span>
-            <span className="text-sm font-bold">₹{reportData.income.toLocaleString('en-IN')}</span>
+      {/* Custom Date Pickers */}
+      {dateRange === 'custom' && (
+        <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="grid grid-cols-2 gap-3 overflow-hidden">
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-widest text-stone-400 mb-1 block">From</label>
+            <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} className="w-full bg-white border border-stone-200 rounded-xl py-2.5 px-3 text-sm font-medium text-stone-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/30" />
           </div>
-          <div className="flex justify-between items-center">
-            <span className="text-xs text-white/70">Total Expense</span>
-            <span className="text-sm font-bold">₹{reportData.expenses.toLocaleString('en-IN')}</span>
+          <div>
+            <label className="text-[9px] font-bold uppercase tracking-widest text-stone-400 mb-1 block">To</label>
+            <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} className="w-full bg-white border border-stone-200 rounded-xl py-2.5 px-3 text-sm font-medium text-stone-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/30" />
+          </div>
+        </motion.div>
+      )}
+
+      {/* P&L Summary */}
+      <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-[#1b4332] text-white p-5 rounded-3xl relative overflow-hidden">
+        <div className="absolute -right-8 -top-8 w-32 h-32 bg-white/5 rounded-full" />
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-white/60">Profit & Loss</p>
+          <span className="text-[9px] font-semibold text-white/40 bg-white/10 px-2 py-0.5 rounded-full">{rangeLabel}</span>
+        </div>
+        <h2 className="text-[34px] font-headline font-extrabold leading-tight">
+          <span className="text-white/60 text-2xl mr-0.5">₹</span>{Math.abs(netProfit).toLocaleString('en-IN')}
+          {netProfit < 0 && <span className="text-red-300 text-sm ml-1">(Loss)</span>}
+        </h2>
+        <div className="grid grid-cols-3 gap-2 mt-4">
+          <div className="bg-emerald-800/50 p-2.5 rounded-xl text-center">
+            <p className="text-[8px] font-bold uppercase tracking-widest text-white/60 mb-0.5">Income</p>
+            <p className="text-sm font-headline font-extrabold">₹{totalIncome.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="bg-emerald-800/50 p-2.5 rounded-xl text-center">
+            <p className="text-[8px] font-bold uppercase tracking-widest text-white/60 mb-0.5">Expense</p>
+            <p className="text-sm font-headline font-extrabold">₹{totalExpense.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="bg-emerald-800/50 p-2.5 rounded-xl text-center">
+            <p className="text-[8px] font-bold uppercase tracking-widest text-white/60 mb-0.5">Entries</p>
+            <p className="text-sm font-headline font-extrabold">{totalEntries}</p>
           </div>
         </div>
       </motion.section>
 
-      {/* Income / Expense Breakdown */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-white p-4 rounded-2xl border border-stone-200/60 shadow-sm">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 mb-2">Income</p>
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="text-xs text-stone-500">Sales</span>
-              <span className="text-sm font-bold text-stone-800">{formatCurrency(reportData.sales)}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-xs text-stone-500">Receipts</span>
-              <span className="text-sm font-bold text-stone-800">{formatCurrency(reportData.receipts)}</span>
-            </div>
-          </div>
-        </div>
-        <div className="bg-white p-4 rounded-2xl border border-stone-200/60 shadow-sm">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-red-500 mb-2">Expense</p>
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="text-xs text-stone-500">Purchases</span>
-              <span className="text-sm font-bold text-stone-800">{formatCurrency(reportData.purchases)}</span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-xs text-stone-500">Payments</span>
-              <span className="text-sm font-bold text-stone-800">{formatCurrency(reportData.payments)}</span>
+      {/* Expense Donut + Drill-down */}
+      <section className="bg-white rounded-2xl border border-stone-200/60 p-4 shadow-sm">
+        <h4 className="font-headline font-bold text-stone-800 text-[13px] uppercase tracking-wider mb-4 flex items-center gap-1.5">
+          <span className="material-symbols-outlined text-base text-red-400">pie_chart</span>
+          Expense Breakdown
+        </h4>
+        <div className="flex items-center gap-5">
+          <div className="relative w-28 h-28 shrink-0">
+            <div className="w-full h-full rounded-full" style={{ background: expenseDonut.segments }} />
+            <div className="absolute inset-3 bg-white rounded-full flex flex-col items-center justify-center">
+              <p className="text-[8px] font-bold text-stone-400 uppercase">Total</p>
+              <p className="text-xs font-headline font-extrabold text-red-600">{formatCurrency(totalExpense)}</p>
             </div>
           </div>
+          <div className="flex-1 space-y-1.5">
+            {expenseDonut.items.map((item, i) => (
+              <div key={i} className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: item.color }} />
+                  <span className="text-[10px] font-semibold text-stone-600 truncate max-w-[100px]">{item.name}</span>
+                </div>
+                <span className="text-[10px] font-bold text-stone-800">{Math.round(item.pct)}%</span>
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
 
-      {/* Balance Sheet */}
-      <section>
-        <h4 className="font-headline font-bold text-stone-800 text-[15px] mb-3">Balance Sheet</h4>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-white p-4 rounded-2xl border border-stone-200/60 shadow-sm">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-1">Total Assets</p>
-            <h4 className="text-lg font-headline font-extrabold text-emerald-700">
-              {formatCurrency(reportData.stockValue + reportData.receivables + Math.max(0, reportData.cashInHand) + Math.max(0, reportData.bankBalance))}
-            </h4>
-            <p className="text-[10px] text-stone-400 mt-1">Stock + Receivable + Cash</p>
-          </div>
-          <div className="bg-white p-4 rounded-2xl border border-stone-200/60 shadow-sm">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-1">Total Liabilities</p>
-            <h4 className="text-lg font-headline font-extrabold text-red-600">{formatCurrency(reportData.payables)}</h4>
-            <p className="text-[10px] text-stone-400 mt-1">Total Payable</p>
-          </div>
+        <div className="mt-4 space-y-1.5">
+          {topExpenseGroups.map((group, i) => {
+            const pct = totalExpense > 0 ? Math.round((group.total / totalExpense) * 100) : 0;
+            const isExpanded = expandedSection === `exp-${group.id}`;
+            const children = getChildren(group.id);
+
+            return (
+              <div key={group.id}>
+                <div
+                  onClick={() => setExpandedSection(isExpanded ? null : `exp-${group.id}`)}
+                  className="flex items-center justify-between py-2 px-2 rounded-lg cursor-pointer hover:bg-stone-50 active:bg-stone-100 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-sm" style={{ color: EXPENSE_COLORS[i % EXPENSE_COLORS.length] }}>{group.icon || 'folder'}</span>
+                    <span className="text-xs font-bold text-stone-700">{group.name}</span>
+                    {(children.length > 0 || vouchers.some(v => v.ledger_group_id === group.id)) && (
+                      <span className="material-symbols-outlined text-stone-300 text-xs">{isExpanded ? 'expand_less' : 'expand_more'}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-16 h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: EXPENSE_COLORS[i % EXPENSE_COLORS.length] }} />
+                    </div>
+                    <span className="text-xs font-bold text-red-600 min-w-[60px] text-right">{formatCurrency(group.total)}</span>
+                  </div>
+                </div>
+
+                {isExpanded && children.length > 0 && (
+                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} className="ml-6 space-y-1 overflow-hidden">
+                    {children.map(child => {
+                      const childTotal = getGroupTotal(child.id);
+                      const childPct = group.total > 0 ? Math.round((childTotal / group.total) * 100) : 0;
+                      const isChildExpanded = expandedSection === `tx-${child.id}`;
+                      const childTxs = vouchers.filter(v => v.ledger_group_id === child.id);
+
+                      return (
+                        <div key={child.id}>
+                          <div
+                            onClick={() => setExpandedSection(isChildExpanded ? `exp-${group.id}` : `tx-${child.id}`)}
+                            className="flex items-center justify-between py-1.5 px-2 rounded-lg cursor-pointer hover:bg-stone-50 transition-colors"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="material-symbols-outlined text-stone-400 text-xs">{child.icon || 'subdirectory_arrow_right'}</span>
+                              <span className="text-[10px] font-semibold text-stone-600">{child.name}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-[9px] text-stone-400">{childPct}%</span>
+                              <span className="text-[10px] font-bold text-red-600">{formatCurrency(childTotal)}</span>
+                            </div>
+                          </div>
+
+                          {isChildExpanded && childTxs.length > 0 && (
+                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="ml-5 space-y-0.5 mb-2">
+                              {childTxs.map(tx => (
+                                <div key={tx.id} className="flex items-center justify-between py-1 px-2 text-[9px]">
+                                  <span className="text-stone-500 truncate max-w-[120px]">{tx.notes || child.name} • {formatDate(tx.date)}</span>
+                                  <span className="font-bold text-red-600">{formatCurrency(tx.amount)}</span>
+                                </div>
+                              ))}
+                            </motion.div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </motion.div>
+                )}
+
+                {/* Direct transactions (no children) */}
+                {isExpanded && children.length === 0 && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="ml-6 space-y-0.5 mb-2">
+                    {vouchers.filter(v => v.ledger_group_id === group.id).map(tx => (
+                      <div key={tx.id} className="flex items-center justify-between py-1 px-2 text-[9px]">
+                        <span className="text-stone-500 truncate max-w-[120px]">{tx.notes || group.name} • {formatDate(tx.date)}</span>
+                        <span className="font-bold text-red-600">{formatCurrency(tx.amount)}</span>
+                      </div>
+                    ))}
+                  </motion.div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </section>
 
-      {/* Report Views */}
-      <section>
-        <h4 className="font-headline font-bold text-stone-800 text-[15px] mb-3">Financial Reports</h4>
-        <div className="flex gap-2 mb-4">
-          {[
-            { id: 'daybook' as ReportView, icon: 'menu_book', label: 'Day Book' },
-            { id: 'cashbook' as ReportView, icon: 'account_balance', label: 'Cash & Bank' },
-          ].map(report => (
-            <button
-              key={report.id}
-              onClick={() => setActiveView(activeView === report.id ? 'summary' : report.id)}
-              className={cn(
-                "flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all flex-1",
-                activeView === report.id
-                  ? "bg-[#1b4332] text-white shadow-sm"
-                  : "bg-white text-stone-600 border border-stone-200"
-              )}
-            >
-              <span className="material-symbols-outlined text-lg">{report.icon}</span>
-              {report.label}
-            </button>
-          ))}
+      {/* Income Donut + Drill-down */}
+      <section className="bg-white rounded-2xl border border-stone-200/60 p-4 shadow-sm">
+        <h4 className="font-headline font-bold text-stone-800 text-[13px] uppercase tracking-wider mb-4 flex items-center gap-1.5">
+          <span className="material-symbols-outlined text-base text-emerald-400">pie_chart</span>
+          Income Breakdown
+        </h4>
+        <div className="flex items-center gap-5">
+          <div className="relative w-28 h-28 shrink-0">
+            <div className="w-full h-full rounded-full" style={{ background: incomeDonut.segments }} />
+            <div className="absolute inset-3 bg-white rounded-full flex flex-col items-center justify-center">
+              <p className="text-[8px] font-bold text-stone-400 uppercase">Total</p>
+              <p className="text-xs font-headline font-extrabold text-emerald-700">{formatCurrency(totalIncome)}</p>
+            </div>
+          </div>
+          <div className="flex-1 space-y-1.5">
+            {incomeDonut.items.map((item, i) => (
+              <div key={i} className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: item.color }} />
+                  <span className="text-[10px] font-semibold text-stone-600 truncate max-w-[100px]">{item.name}</span>
+                </div>
+                <span className="text-[10px] font-bold text-stone-800">{Math.round(item.pct)}%</span>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Day Book View */}
-        {activeView === 'daybook' && (
-          <div className="space-y-2">
-            {reportData.transactions.map(tx => {
-              const isSale = tx.type === 'sale' || tx.type === 'receipt';
-              return (
-                <div key={tx.id} className="bg-white p-3.5 rounded-2xl border border-stone-200/60 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      "w-9 h-9 rounded-full flex items-center justify-center",
-                      isSale ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-600"
-                    )}>
-                      <span className="material-symbols-outlined text-lg">
-                        {tx.type === 'sale' ? 'trending_up' : tx.type === 'purchase' ? 'trending_down' : tx.type === 'receipt' ? 'receipt_long' : 'shopping_cart'}
-                      </span>
-                    </div>
-                    <div>
-                      <h5 className="text-sm font-bold text-stone-800">{tx.parties?.name || 'Cash'}</h5>
-                      <p className="text-[10px] text-stone-400">
-                        <span className="capitalize">{tx.type}</span> • {getTimeAgo(tx.date)} • {tx.payment_mode || 'Cash'}
-                      </p>
-                    </div>
-                  </div>
-                  <span className={cn("text-sm font-bold", isSale ? "text-emerald-700" : "text-red-600")}>
-                    {isSale ? '+' : '-'}{formatCurrency(tx.amount)}
-                  </span>
-                </div>
-              );
-            })}
-            {reportData.transactions.length === 0 && (
-              <p className="text-center text-sm text-stone-400 py-8">No transactions in this period.</p>
-            )}
-          </div>
-        )}
+        <div className="mt-4 space-y-1.5">
+          {topIncomeGroups.map((group, i) => {
+            const pct = totalIncome > 0 ? Math.round((group.total / totalIncome) * 100) : 0;
+            const isExpanded = expandedSection === `inc-${group.id}`;
+            const txs = vouchers.filter(v => getAllDescendantIds(group.id).includes(v.ledger_group_id));
 
-        {/* Cash & Bank Book View */}
-        {activeView === 'cashbook' && (
-          <div className="space-y-3">
-            {/* Cash Summary */}
-            <div className="bg-white p-4 rounded-2xl border border-stone-200/60 shadow-sm">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-amber-600">payments</span>
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-stone-800">Cash in Hand</p>
-                  <p className="text-lg font-headline font-extrabold text-stone-800">
-                    {formatCurrency(reportData.cashInHand)}
-                  </p>
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                {reportData.transactions.filter(t => t.payment_mode === 'Cash').slice(0, 5).map(tx => (
-                  <div key={tx.id} className="flex justify-between items-center py-1 text-xs">
-                    <span className="text-stone-500">{tx.parties?.name || 'Cash'} • {getTimeAgo(tx.date)}</span>
-                    <span className={cn("font-bold", (tx.type === 'sale' || tx.type === 'receipt') ? "text-emerald-600" : "text-red-600")}>
-                      {(tx.type === 'sale' || tx.type === 'receipt') ? '+' : '-'}{formatCurrency(tx.amount)}
-                    </span>
+            return (
+              <div key={group.id}>
+                <div
+                  onClick={() => setExpandedSection(isExpanded ? null : `inc-${group.id}`)}
+                  className="flex items-center justify-between py-2 px-2 rounded-lg cursor-pointer hover:bg-stone-50 active:bg-stone-100 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-sm" style={{ color: INCOME_COLORS[i % INCOME_COLORS.length] }}>{group.icon || 'folder'}</span>
+                    <span className="text-xs font-bold text-stone-700">{group.name}</span>
+                    {txs.length > 0 && <span className="material-symbols-outlined text-stone-300 text-xs">{isExpanded ? 'expand_less' : 'expand_more'}</span>}
                   </div>
-                ))}
-              </div>
-            </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-16 h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: INCOME_COLORS[i % INCOME_COLORS.length] }} />
+                    </div>
+                    <span className="text-xs font-bold text-emerald-700 min-w-[60px] text-right">{formatCurrency(group.total)}</span>
+                  </div>
+                </div>
 
-            {/* Bank Summary */}
-            <div className="bg-white p-4 rounded-2xl border border-stone-200/60 shadow-sm">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
-                  <span className="material-symbols-outlined text-blue-600">account_balance</span>
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-stone-800">Bank Balance</p>
-                  <p className="text-lg font-headline font-extrabold text-stone-800">
-                    {formatCurrency(reportData.bankBalance)}
-                  </p>
-                </div>
+                {isExpanded && txs.length > 0 && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="ml-6 space-y-0.5 mb-2">
+                    {txs.map(tx => (
+                      <div key={tx.id} className="flex items-center justify-between py-1 px-2 text-[9px]">
+                        <span className="text-stone-500 truncate max-w-[120px]">{tx.notes || group.name} • {formatDate(tx.date)}</span>
+                        <span className="font-bold text-emerald-700">{formatCurrency(tx.amount)}</span>
+                      </div>
+                    ))}
+                  </motion.div>
+                )}
               </div>
-              <div className="space-y-1.5">
-                {reportData.transactions.filter(t => t.payment_mode !== 'Cash').slice(0, 5).map(tx => (
-                  <div key={tx.id} className="flex justify-between items-center py-1 text-xs">
-                    <span className="text-stone-500">{tx.parties?.name || 'Bank'} • {getTimeAgo(tx.date)}</span>
-                    <span className={cn("font-bold", (tx.type === 'sale' || tx.type === 'receipt') ? "text-emerald-600" : "text-red-600")}>
-                      {(tx.type === 'sale' || tx.type === 'receipt') ? '+' : '-'}{formatCurrency(tx.amount)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+            );
+          })}
+        </div>
       </section>
+
+      {totalEntries === 0 && !isLoading && (
+        <div className="text-center py-8">
+          <span className="material-symbols-outlined text-4xl text-stone-200 mb-2 block">analytics</span>
+          <p className="text-sm text-stone-400">No transactions in this period.</p>
+        </div>
+      )}
     </div>
   );
 }

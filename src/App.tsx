@@ -8,77 +8,110 @@ import khetbookIcon from './assets/khetbook-icon.png';
 
 // Components
 import Dashboard from './components/Dashboard';
-import Billing from './components/Billing';
+import AddEntry from './components/AddEntry';
+import EditEntry from './components/EditEntry';
 import Ledger from './components/Ledger';
-import Inventory from './components/Inventory';
 import Reports from './components/Reports';
 import Auth from './components/Auth';
 import Settings from './components/Settings';
 import FamilyHome from './components/FamilyHome';
 
-export type Tab = 'dashboard' | 'billing' | 'ledger' | 'inventory' | 'reports' | 'settings';
+export type Tab = 'dashboard' | 'add' | 'ledger' | 'reports' | 'settings';
 
 export default function App() {
   const { user, member, role, setUser, setMember, setRole, setOwnerId } = useAuthStore();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [isLoading, setLoading] = useState(true);
+  const [editingTransaction, setEditingTransaction] = useState<any>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [addEntryType, setAddEntryType] = useState<'income' | 'expense'>('expense');
 
-  // Restore session
+  const restoreAuthState = (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
+    const isFamily = localStorage.getItem('khetbook_family_session') === 'true';
+    const familyPinData = localStorage.getItem('khetbook_family_pin');
+
+    if (!session) {
+      setUser(null);
+      setMember(null);
+      setRole(null);
+      setOwnerId(null);
+      localStorage.removeItem('khetbook_family_session');
+      return;
+    }
+
+    setUser(session.user);
+    setMember(null);
+
+    if (isFamily && familyPinData) {
+      try {
+        const parsed = JSON.parse(familyPinData);
+        if (parsed?.ownerId) {
+          setRole('family_member');
+          setOwnerId(parsed.ownerId);
+          return;
+        }
+      } catch {
+        // fall back
+      }
+      localStorage.removeItem('khetbook_family_session');
+    }
+
+    setRole('owner');
+    setOwnerId(session.user.id);
+  };
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      // Check for family session
-      const isFamily = localStorage.getItem('khetbook_family_session') === 'true';
-      const familyPinData = localStorage.getItem('khetbook_family_pin');
-
-      if (session) {
-        setUser(session.user);
-        if (isFamily && familyPinData) {
-          try {
-            const { ownerId } = JSON.parse(familyPinData);
-            setRole('family_member');
-            setOwnerId(ownerId);
-          } catch {
-            setRole('owner');
-            setOwnerId(session.user.id);
-          }
-        } else {
-          setRole('owner');
-          setOwnerId(session.user.id);
-        }
-      }
+      restoreAuthState(session);
       setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      const isFamily = localStorage.getItem('khetbook_family_session') === 'true';
-      const familyPinData = localStorage.getItem('khetbook_family_pin');
-
-      if (session) {
-        setUser(session.user);
-        if (isFamily && familyPinData) {
-          try {
-            const { ownerId } = JSON.parse(familyPinData);
-            setRole('family_member');
-            setOwnerId(ownerId);
-          } catch {
-            setRole('owner');
-            setOwnerId(session.user.id);
-          }
-        } else {
-          setRole('owner');
-          setOwnerId(session.user.id);
-        }
-      } else {
-        setUser(null);
-        setRole(null);
-        setOwnerId(null);
-        localStorage.removeItem('khetbook_family_session');
-      }
+      restoreAuthState(session);
       setLoading(false);
     });
 
     return () => subscription.unsubscribe();
-  }, [setOwnerId, setRole, setUser]);
+  }, [setMember, setOwnerId, setRole, setUser]);
+
+  const handleEditTransaction = (tx: any) => {
+    setEditingTransaction(tx);
+  };
+
+  const handleEditSave = () => {
+    setEditingTransaction(null);
+    setRefreshKey(k => k + 1); // Force child components to refresh
+  };
+
+  const handleEditCancel = () => {
+    setEditingTransaction(null);
+  };
+
+  const navItems = [
+    { id: 'dashboard', icon: 'home', label: 'Home' },
+    { id: 'add', icon: 'add_circle', label: 'Add' },
+    { id: 'ledger', icon: 'account_tree', label: 'Ledger' },
+    { id: 'reports', icon: 'assessment', label: 'Reports' },
+  ];
+
+  const swipeHandlers = useSwipeable({
+    onSwipedLeft: () => {
+      if (!user || role !== 'owner') return;
+      const currentIndex = navItems.findIndex(item => item.id === activeTab);
+      if (currentIndex >= 0 && currentIndex < navItems.length - 1) {
+        setActiveTab(navItems[currentIndex + 1].id as Tab);
+      }
+    },
+    onSwipedRight: () => {
+      if (!user || role !== 'owner') return;
+      const currentIndex = navItems.findIndex(item => item.id === activeTab);
+      if (currentIndex > 0) {
+        setActiveTab(navItems[currentIndex - 1].id as Tab);
+      }
+    },
+    preventScrollOnSwipe: true,
+    trackMouse: false
+  });
 
   if (isLoading) {
     return (
@@ -96,37 +129,9 @@ export default function App() {
     return <Auth />;
   }
 
-  // Restrict Family to FamilyHome
   if (role === 'family_member') {
     return <FamilyHome />;
   }
-
-  const navItems = [
-    { id: 'dashboard', icon: 'dashboard', label: 'Home', roles: ['owner', 'family_member'] },
-    { id: 'billing', icon: 'receipt_long', label: 'Billing', roles: ['owner', 'family_member'] },
-    { id: 'ledger', icon: 'menu_book', label: 'Ledger', roles: ['owner', 'family_member'] },
-    { id: 'inventory', icon: 'inventory_2', label: 'Stock', roles: ['owner', 'family_member'] },
-    { id: 'reports', icon: 'assessment', label: 'Reports', roles: ['owner'] },
-  ].filter(item => item.roles.includes(role || ''));
-
-  const swipeHandlers = useSwipeable({
-    onSwipedLeft: () => {
-      // Swiping left moves to the next tab (Right)
-      const currentIndex = navItems.findIndex(item => item.id === activeTab);
-      if (currentIndex >= 0 && currentIndex < navItems.length - 1) {
-        setActiveTab(navItems[currentIndex + 1].id as Tab);
-      }
-    },
-    onSwipedRight: () => {
-      // Swiping right moves to the previous tab (Left)
-      const currentIndex = navItems.findIndex(item => item.id === activeTab);
-      if (currentIndex > 0) {
-        setActiveTab(navItems[currentIndex - 1].id as Tab);
-      }
-    },
-    preventScrollOnSwipe: true,
-    trackMouse: false
-  });
 
   return (
     <div {...swipeHandlers} className="min-h-screen bg-[#fafaf9] text-stone-800 font-body pb-24 overflow-x-hidden">
@@ -158,10 +163,9 @@ export default function App() {
             exit={{ opacity: 0, y: -5 }}
             transition={{ duration: 0.15 }}
           >
-            {activeTab === 'dashboard' && <Dashboard onNavigate={setActiveTab} />}
-            {activeTab === 'billing' && <Billing />}
-            {activeTab === 'ledger' && <Ledger />}
-            {activeTab === 'inventory' && <Inventory />}
+            {activeTab === 'dashboard' && <Dashboard onNavigate={setActiveTab} onEditTransaction={handleEditTransaction} onSetAddType={(type) => { setAddEntryType(type); setActiveTab('add'); }} refreshKey={refreshKey} />}
+            {activeTab === 'add' && <AddEntry onDone={() => setActiveTab('dashboard')} initialType={addEntryType} />}
+            {activeTab === 'ledger' && <Ledger onEditTransaction={handleEditTransaction} refreshKey={refreshKey} />}
             {activeTab === 'reports' && <Reports />}
             {activeTab === 'settings' && <Settings />}
           </motion.div>
@@ -204,6 +208,17 @@ export default function App() {
           );
         })}
       </nav>
+
+      {/* Edit Entry Overlay */}
+      <AnimatePresence>
+        {editingTransaction && (
+          <EditEntry
+            transaction={editingTransaction}
+            onSave={handleEditSave}
+            onCancel={handleEditCancel}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -3,8 +3,9 @@
 -- Run this in Supabase SQL Editor
 -- =============================================
 
--- Enable UUID extension
+-- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- Drop existing tables/views to allow clean recreation (BE CAREFUL IN PRODUCTION)
 DROP VIEW IF EXISTS items_family_view;
@@ -32,13 +33,22 @@ CREATE TABLE profiles (
 
 -- 2. Ledger Groups Table (Hierarchical Categories for Income/Expense)
 CREATE TABLE ledger_groups (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
-  parent_id UUID REFERENCES ledger_groups(id) ON DELETE CASCADE,
-  icon TEXT DEFAULT 'folder',
-  created_at TIMESTAMPTZ DEFAULT now()
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+    parent_id UUID REFERENCES ledger_groups(id) ON DELETE CASCADE,
+    icon TEXT DEFAULT 'folder',
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Prevent duplicate default ledgers for the same user/parent/type/name
+CREATE UNIQUE INDEX ledger_groups_user_parent_name_type_unique_idx
+ON ledger_groups (
+    user_id,
+    type,
+    COALESCE(parent_id, '00000000-0000-0000-0000-000000000000'::UUID),
+    LOWER(name)
 );
 
 -- 3. Vouchers Table (Core Transactions)
@@ -80,8 +90,33 @@ CREATE TABLE items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    category TEXT CHECK (category IN ('crop', 'fertilizer', 'seed', 'pesticide', 'fuel', 'equipment', 'other')),
-    unit TEXT CHECK (unit IN ('kg', 'quintal', 'litre', 'unit', 'bigha')),
+    category TEXT CHECK (
+        category IN (
+            'crop',
+            'fertilizer',
+            'seed',
+            'pesticide',
+            'fungicide',
+            'herbicide',
+            'fuel',
+            'equipment',
+            'labour',
+            'other'
+        )
+    ),
+    unit TEXT CHECK (
+        unit IN (
+            'kg',
+            'gram',
+            'quintal',
+            'litre',
+            'NOS',
+            'mun',
+            'bag',
+            'ton',
+            'packet'
+        )
+    ),
     current_stock NUMERIC(15,3) DEFAULT 0.000,
     min_stock NUMERIC(15,3) DEFAULT 0.000,
     rate NUMERIC(15,2) DEFAULT 0.00,
@@ -150,7 +185,6 @@ FROM items;
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ledger_groups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vouchers ENABLE ROW LEVEL SECURITY;
-
 ALTER TABLE parties ENABLE ROW LEVEL SECURITY;
 ALTER TABLE items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE farm_members ENABLE ROW LEVEL SECURITY;
@@ -159,13 +193,139 @@ ALTER TABLE voucher_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ledger_entries ENABLE ROW LEVEL SECURITY;
 
 -- Base Policies (Users see/manage their own data)
-CREATE POLICY "Users can manage own profile" ON profiles FOR ALL USING (auth.uid() = id);
-CREATE POLICY "Users can manage own ledger groups" ON ledger_groups FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users can manage own vouchers" ON vouchers FOR ALL USING (auth.uid() = user_id);
+CREATE POLICY "Users can manage own profile" ON profiles
+FOR ALL
+USING (auth.uid() = id);
 
-CREATE POLICY "Users can manage own parties" ON parties FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users can manage own items" ON items FOR ALL USING (auth.uid() = user_id);
-CREATE POLICY "Users can view own voucher lines" ON voucher_lines FOR SELECT USING (
-    EXISTS (SELECT 1 FROM vouchers WHERE vouchers.id = voucher_lines.voucher_id AND vouchers.user_id = auth.uid())
+CREATE POLICY "Users can manage own ledger groups" ON ledger_groups
+FOR ALL
+USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can manage own vouchers" ON vouchers
+FOR ALL
+USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can manage own parties" ON parties
+FOR ALL
+USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can manage own items" ON items
+FOR ALL
+USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can view own voucher lines" ON voucher_lines
+FOR SELECT
+USING (
+    EXISTS (
+        SELECT 1
+        FROM vouchers
+        WHERE vouchers.id = voucher_lines.voucher_id
+          AND vouchers.user_id = auth.uid()
+    )
 );
-CREATE POLICY "Users can manage own ledger entries" ON ledger_entries FOR ALL USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can manage own ledger entries" ON ledger_entries
+FOR ALL
+USING (auth.uid() = user_id);
+
+-- Cross-device family access setup
+-- Also enable Anonymous sign-ins in Supabase Auth settings.
+
+DROP POLICY IF EXISTS "Owners can manage own family members" ON farm_members;
+CREATE POLICY "Owners can manage own family members"
+ON farm_members
+FOR ALL
+USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS "Family sessions can read own member record" ON farm_members;
+CREATE POLICY "Family sessions can read own member record"
+ON farm_members
+FOR SELECT
+USING (session_token = auth.uid()::text);
+
+DROP POLICY IF EXISTS "Family sessions can read shared ledger groups" ON ledger_groups;
+CREATE POLICY "Family sessions can read shared ledger groups"
+ON ledger_groups
+FOR SELECT
+USING (
+    EXISTS (
+        SELECT 1
+        FROM farm_members
+        WHERE farm_members.user_id = ledger_groups.user_id
+          AND farm_members.session_token = auth.uid()::text
+          AND farm_members.is_active = true
+    )
+);
+
+DROP POLICY IF EXISTS "Family sessions can read shared vouchers" ON vouchers;
+CREATE POLICY "Family sessions can read shared vouchers"
+ON vouchers
+FOR SELECT
+USING (
+    EXISTS (
+        SELECT 1
+        FROM farm_members
+        WHERE farm_members.user_id = vouchers.user_id
+          AND farm_members.session_token = auth.uid()::text
+          AND farm_members.is_active = true
+    )
+);
+
+CREATE OR REPLACE FUNCTION activate_family_access(p_pin TEXT, p_session_token TEXT)
+RETURNS TABLE (
+    id UUID,
+    user_id UUID,
+    display_name TEXT,
+    role TEXT,
+    invite_pin TEXT,
+    invite_used BOOLEAN,
+    is_active BOOLEAN,
+    last_active_at TIMESTAMPTZ,
+    session_token TEXT,
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    member_row farm_members%ROWTYPE;
+BEGIN
+    SELECT *
+    INTO member_row
+    FROM farm_members
+    WHERE invite_pin = p_pin
+      AND role = 'family_member'
+      AND is_active = true
+    ORDER BY updated_at DESC
+    LIMIT 1;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Invalid family PIN';
+    END IF;
+
+    UPDATE farm_members
+    SET session_token = p_session_token,
+        invite_used = true,
+        last_active_at = now(),
+        updated_at = now()
+    WHERE farm_members.id = member_row.id
+    RETURNING * INTO member_row;
+
+    RETURN QUERY
+    SELECT
+        member_row.id,
+        member_row.user_id,
+        member_row.display_name,
+        member_row.role,
+        member_row.invite_pin,
+        member_row.invite_used,
+        member_row.is_active,
+        member_row.last_active_at,
+        member_row.session_token,
+        member_row.created_at,
+        member_row.updated_at;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION activate_family_access(TEXT, TEXT) TO anon, authenticated;

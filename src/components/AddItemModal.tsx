@@ -95,6 +95,10 @@ export default function AddItemModal({ isOpen, onClose, onSuccess }: AddItemModa
                     <option value="fertilizer">Fertilizer</option>
                     <option value="seed">Seed</option>
                     <option value="pesticide">Pesticide</option>
+                    <option value="medicine">Medicine</option>
+                    <option value="feed">Feed</option>
+                    <option value="dairy">Dairy</option>
+                    <option value="labour">Labour</option>
                     <option value="fuel">Fuel</option>
                     <option value="equipment">Equipment</option>
                     <option value="other">Other</option>
@@ -113,6 +117,7 @@ export default function AddItemModal({ isOpen, onClose, onSuccess }: AddItemModa
                     <option value="bag">Bag / Bori</option>
                     <option value="ton">Ton</option>
                     <option value="litre">Litre</option>
+                    <option value="packet">Packet</option>
                     <option value="unit">Unit</option>
                     <option value="bigha">Bigha</option>
                   </select>

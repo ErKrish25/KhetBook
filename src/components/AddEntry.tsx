@@ -40,6 +40,8 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
   const [newItemUnit, setNewItemUnit] = useState('kg');
   const [newItemRate, setNewItemRate] = useState('');
   const [addingItem, setAddingItem] = useState(false);
+  const [newItemParentLedgerId, setNewItemParentLedgerId] = useState<string | null>(null);
+  const [addItemError, setAddItemError] = useState('');
 
   useEffect(() => {
     fetchGroups();
@@ -51,6 +53,13 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
     if (data) setGroups(data);
     setSelectedGroupId(null);
     setBreadcrumb([]);
+  };
+
+  // Refresh groups without resetting selection (used after creating new items/groups)
+  const refreshGroups = async (): Promise<LedgerGroup[]> => {
+    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).eq('type', entryType).order('name');
+    if (data) setGroups(data);
+    return data || [];
   };
 
   const fetchItems = async () => {
@@ -113,28 +122,106 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
     return map[unit?.toLowerCase()] || unit;
   };
 
-  // Add new item
+  // Valid categories that match database CHECK constraints
+  const VALID_CATEGORIES = ['crop', 'fertilizer', 'seed', 'pesticide', 'fuel', 'equipment', 'medicine', 'feed', 'dairy', 'labour', 'other'];
+  const VALID_UNITS = ['kg', 'quintal', 'litre', 'unit', 'bigha', 'mun', 'bag', 'ton', 'packet'];
+
+  // Map item category to a suitable icon for the ledger group
+  const getCategoryIcon = (cat: string): string => {
+    const iconMap: Record<string, string> = {
+      crop: 'eco', fertilizer: 'spa', seed: 'grass', pesticide: 'pest_control',
+      fuel: 'local_gas_station', equipment: 'build', medicine: 'medical_services',
+      feed: 'restaurant', dairy: 'water_drop', labour: 'engineering', other: 'folder',
+    };
+    return iconMap[cat?.toLowerCase()] || 'folder';
+  };
+
+  // Get top-level (root) ledger groups for the parent dropdown
+  const parentLedgerOptions = groups.filter(g => g.parent_id === null);
+
+  // Add new item + auto-create ledger group
   const handleAddItem = async () => {
-    if (!newItemName.trim()) return;
+    if (!newItemName.trim()) {
+      setAddItemError('Item name is required');
+      return;
+    }
+
+    // Validate category
+    const categoryVal = newItemCategory.toLowerCase().trim();
+    if (!VALID_CATEGORIES.includes(categoryVal)) {
+      setAddItemError(`Invalid category "${newItemCategory}". Choose from the options below.`);
+      return;
+    }
+
+    // Validate unit
+    if (!VALID_UNITS.includes(newItemUnit)) {
+      setAddItemError(`Invalid unit "${newItemUnit}".`);
+      return;
+    }
+
+    setAddItemError('');
     setAddingItem(true);
+
     const { data, error } = await supabase.from('items').insert({
       user_id: user?.id,
       name: newItemName.trim(),
-      category: newItemCategory,
+      category: categoryVal,
       unit: newItemUnit,
       rate: parseFloat(newItemRate) || 0,
       current_stock: 0,
       min_stock: 0,
     }).select().single();
 
-    if (!error && data) {
-      await fetchItems();
-      setSelectedItemId(data.id);
-      setRate(newItemRate || '');
-      setShowAddItem(false);
-      setNewItemName('');
-      setNewItemRate('');
+    if (error || !data) {
+      setAddingItem(false);
+      setAddItemError('Failed to save item: ' + (error?.message || 'Unknown error'));
+      return;
     }
+
+    // Auto-create a ledger group under the selected parent
+    let autoLedgerGroupId: string | null = null;
+    const parentId = newItemParentLedgerId || null;
+    const { data: ledgerData, error: ledgerError } = await supabase.from('ledger_groups').insert({
+      user_id: user?.id,
+      name: newItemName.trim(),
+      type: entryType,
+      parent_id: parentId,
+      icon: getCategoryIcon(categoryVal),
+    }).select('id').single();
+
+    if (ledgerError) {
+      console.error('Ledger group creation failed:', ledgerError.message);
+      // Item was created, but ledger group failed — still continue
+    }
+    if (ledgerData) {
+      autoLedgerGroupId = ledgerData.id;
+    }
+
+    await fetchItems();
+    // Refresh groups WITHOUT resetting selection
+    const freshGroups = await refreshGroups();
+
+    setSelectedItemId(data.id);
+    setRate(newItemRate || '');
+
+    // Auto-select the newly created ledger group
+    if (autoLedgerGroupId) {
+      setSelectedGroupId(autoLedgerGroupId);
+      setCategoryError(false);
+      // Set breadcrumb to the parent if one was selected (use fresh data)
+      if (parentId) {
+        const parent = freshGroups.find(g => g.id === parentId);
+        if (parent) setBreadcrumb([parent]);
+      } else {
+        setBreadcrumb([]);
+      }
+    }
+
+    setShowAddItem(false);
+    setNewItemName('');
+    setNewItemCategory('crop');
+    setNewItemRate('');
+    setNewItemParentLedgerId(null);
     setAddingItem(false);
   };
 
@@ -187,7 +274,7 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
     }
   };
 
-  const POPULAR_CATEGORIES = ['Crop', 'Seed', 'Fertilizer', 'Pesticide', 'Medicine', 'Feed', 'Fuel', 'Equipment', 'Other'];
+  const POPULAR_CATEGORIES = ['Crop', 'Seed', 'Fertilizer', 'Pesticide', 'Medicine', 'Feed', 'Dairy', 'Labour', 'Fuel', 'Equipment', 'Other'];
 
   const UNITS = ['kg', 'quintal', 'litre', 'unit', 'bigha', 'mun', 'bag', 'ton', 'packet'];
 
@@ -243,23 +330,25 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
               <AnimatePresence>
                 {showAddItem && (
                   <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-3 space-y-3 overflow-hidden">
+                    {/* Error Message */}
+                    {addItemError && (
+                      <div className="bg-red-50 border border-red-200 text-red-600 text-xs font-medium px-3 py-2 rounded-lg flex items-center gap-1.5">
+                        <span className="material-symbols-outlined text-sm">error</span>
+                        {addItemError}
+                      </div>
+                    )}
                     <input
                       value={newItemName}
-                      onChange={e => setNewItemName(e.target.value)}
+                      onChange={e => { setNewItemName(e.target.value); setAddItemError(''); }}
                       placeholder="Item name (e.g. Wheat, DAP)"
                       className="w-full border border-stone-200 rounded-lg px-3 py-2.5 text-sm font-medium bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
                       autoFocus
                     />
                     <div className="space-y-2">
-                      <input
-                        value={newItemCategory}
-                        onChange={e => setNewItemCategory(e.target.value)}
-                        placeholder="Category (e.g. Feed, Medicine, Custom)"
-                        className="w-full border border-stone-200 rounded-lg px-3 py-2 text-sm font-medium bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 capitalize"
-                      />
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400 block">Category</label>
                       <div className="flex flex-wrap gap-1.5">
                         {POPULAR_CATEGORIES.map(c => (
-                          <button key={c} onClick={() => setNewItemCategory(c.toLowerCase())} className={cn("px-2 py-1 rounded-md text-[10px] font-bold border transition-all", newItemCategory.toLowerCase() === c.toLowerCase() ? "border-blue-400 bg-blue-100 text-blue-700" : "border-stone-200 bg-white text-stone-500")}>
+                          <button key={c} onClick={() => { setNewItemCategory(c.toLowerCase()); setAddItemError(''); }} className={cn("px-2 py-1 rounded-md text-[10px] font-bold border transition-all", newItemCategory.toLowerCase() === c.toLowerCase() ? "border-blue-400 bg-blue-100 text-blue-700" : "border-stone-200 bg-white text-stone-500")}>
                             {c}
                           </button>
                         ))}
@@ -278,8 +367,30 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
                         className="border border-stone-200 rounded-lg px-3 py-2.5 text-sm font-medium bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
                       />
                     </div>
+                    {/* Parent Ledger Group Selector */}
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-blue-500 mb-1 block">
+                        Ledger Category (Parent) — {entryType === 'income' ? '📈 Income' : '📉 Expense'} groups
+                      </label>
+                      <div className="relative">
+                        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-blue-500 text-sm">account_tree</span>
+                        <select
+                          value={newItemParentLedgerId || ''}
+                          onChange={e => setNewItemParentLedgerId(e.target.value || null)}
+                          className="w-full border border-blue-200 rounded-lg pl-9 pr-3 py-2.5 text-sm font-medium bg-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                        >
+                          <option value="">None (Top Level)</option>
+                          {parentLedgerOptions.map(g => (
+                            <option key={g.id} value={g.id}>{g.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <p className="text-[9px] text-blue-400 mt-1">
+                        A ledger sub-category will be auto-created under this parent ({entryType} type)
+                      </p>
+                    </div>
                     <button onClick={handleAddItem} disabled={addingItem || !newItemName.trim()} className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-xs font-bold active:scale-[0.98] disabled:opacity-50">
-                      {addingItem ? 'Adding...' : '+ Add Item'}
+                      {addingItem ? 'Adding...' : '+ Add Item & Create Ledger'}
                     </button>
                   </motion.div>
                 )}

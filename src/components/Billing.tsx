@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { VoucherType, Party, Item } from '../types';
+import { VoucherType, Party, Item, LedgerGroup } from '../types';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuthStore } from '../store';
@@ -38,6 +38,10 @@ export default function Billing() {
 
   const [formData, setFormData] = useState(defaultFormData());
 
+  // Ledger group state
+  const [ledgerGroups, setLedgerGroups] = useState<LedgerGroup[]>([]);
+  const [selectedLedgerGroupId, setSelectedLedgerGroupId] = useState<string | null>(null);
+
   // Is this an item-based voucher or money-only?
   const isItemBased = activeType === 'sale' || activeType === 'purchase';
   const isMoneyOnly = activeType === 'receipt' || activeType === 'payment';
@@ -46,6 +50,7 @@ export default function Billing() {
     fetchVouchers();
     fetchParties();
     fetchItems();
+    fetchLedgerGroups();
   }, [activeType]);
 
   const fetchVouchers = async () => {
@@ -70,6 +75,27 @@ export default function Billing() {
     const { data } = await supabase.from('items').select('*').eq('user_id', user?.id).order('name');
     if (data) setItems(data);
   };
+
+  const fetchLedgerGroups = async () => {
+    const ledgerType = (activeType === 'sale' || activeType === 'receipt') ? 'income' : 'expense';
+    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).eq('type', ledgerType).order('name');
+    if (data) setLedgerGroups(data);
+  };
+
+  // Map item category to a suitable icon for auto-created ledger groups
+  const getCategoryIcon = (cat: string): string => {
+    const iconMap: Record<string, string> = {
+      crop: 'eco', fertilizer: 'spa', seed: 'grass', pesticide: 'pest_control',
+      fuel: 'local_gas_station', equipment: 'build', medicine: 'medical_services',
+      feed: 'restaurant', other: 'folder',
+    };
+    return iconMap[cat?.toLowerCase()] || 'folder';
+  };
+
+  // Get top-level ledger groups for the parent dropdown
+  const parentLedgerOptions = ledgerGroups.filter(g => g.parent_id === null);
+  // Get all groups (for showing sub-categories too)
+  const allLedgerOptions = ledgerGroups;
 
   // Get the selected party's current balance for the form
   const selectedParty = parties.find(p => p.id === formData.party_id);
@@ -99,6 +125,34 @@ export default function Billing() {
     setSaving(true);
 
     // 1. Create voucher
+    // Auto-create ledger group if item-based and no group selected
+    let finalLedgerGroupId = selectedLedgerGroupId;
+    if (isItemBased && formData.item_id && !finalLedgerGroupId) {
+      const selectedItem = items.find(i => i.id === formData.item_id);
+      if (selectedItem) {
+        // Check if a ledger group with this item name already exists
+        const existingGroup = ledgerGroups.find(g => g.name.toLowerCase() === selectedItem.name.toLowerCase());
+        if (existingGroup) {
+          finalLedgerGroupId = existingGroup.id;
+        } else {
+          // Auto-create a new ledger group
+          const ledgerType = activeType === 'sale' ? 'income' : 'expense';
+          const { data: newGroup, error: lgError } = await supabase.from('ledger_groups').insert({
+            user_id: user?.id,
+            name: selectedItem.name,
+            type: ledgerType,
+            parent_id: null,
+            icon: getCategoryIcon(selectedItem.category),
+          }).select('id').single();
+          if (lgError) {
+            console.error('Auto-create ledger group failed:', lgError.message);
+            // Continue without a ledger group — don't block the transaction
+          }
+          if (newGroup) finalLedgerGroupId = newGroup.id;
+        }
+      }
+    }
+
     const payload = {
       user_id: user?.id,
       voucher_no: formData.voucher_no,
@@ -108,6 +162,7 @@ export default function Billing() {
       amount,
       payment_mode: formData.payment_mode,
       notes: formData.notes,
+      ledger_group_id: finalLedgerGroupId || null,
     };
 
     const { data: voucherData, error: voucherError } = await supabase
@@ -223,9 +278,11 @@ export default function Billing() {
     setSaving(false);
     setFormData(defaultFormData());
     setFormError('');
+    setSelectedLedgerGroupId(null);
     fetchVouchers();
     fetchItems();
     fetchParties();
+    fetchLedgerGroups();
     setView('list');
   };
 
@@ -319,7 +376,8 @@ export default function Billing() {
                 key={t.id}
                 onClick={() => {
                   setActiveType(t.id as VoucherType);
-                  // Reset payment_mode when switching type
+                  // Reset payment_mode and ledger group when switching type
+                  setSelectedLedgerGroupId(null);
                   setFormData(prev => ({
                     ...prev,
                     payment_mode: t.id === 'receipt' || t.id === 'payment' ? 'Cash' : prev.payment_mode,
@@ -468,6 +526,35 @@ export default function Billing() {
                 </div>
               </div>
             </div>
+          </section>
+        )}
+
+        {/* Ledger Category — for Sale/Purchase */}
+        {isItemBased && (
+          <section className="bg-white p-5 rounded-2xl border border-stone-200/60 shadow-sm space-y-3">
+            <h4 className="text-[11px] font-bold uppercase tracking-widest text-stone-500 flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-sm text-emerald-600">account_tree</span>
+              Ledger Category — {activeType === 'sale' ? '📈 Income' : '📉 Expense'} groups
+            </h4>
+            <div className="relative">
+              <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-emerald-600 text-lg">folder</span>
+              <select
+                value={selectedLedgerGroupId || ''}
+                onChange={(e) => setSelectedLedgerGroupId(e.target.value || null)}
+                className="w-full bg-white border border-stone-200 rounded-xl py-3 pl-10 pr-10 text-sm font-semibold text-stone-800 appearance-none focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              >
+                <option value="">Auto-create from item name</option>
+                {allLedgerOptions.map(g => (
+                  <option key={g.id} value={g.id}>{g.parent_id ? '  ↳ ' : ''}{g.name}</option>
+                ))}
+              </select>
+              <span className="material-symbols-outlined absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 text-lg">expand_more</span>
+            </div>
+            <p className="text-[9px] text-stone-400">
+              {selectedLedgerGroupId
+                ? 'This bill will be linked to the selected ledger category'
+                : `A ${activeType === 'sale' ? 'income' : 'expense'} ledger category will be auto-created using the item name`}
+            </p>
           </section>
         )}
 

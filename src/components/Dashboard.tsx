@@ -3,7 +3,6 @@ import { supabase } from '../lib/supabase';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion } from 'motion/react';
 import { useAuthStore } from '../store';
-import { LedgerGroup } from '../types';
 import type { Tab } from '../App';
 
 interface DashboardProps {
@@ -33,6 +32,9 @@ const DEFAULT_GROUPS = [
   { name: 'Other Expense', type: 'expense', icon: 'receipt_long', parent: null },
 ];
 
+const SEEDED_USER_IDS = new Set<string>();
+const SEEDING_BY_USER_ID = new Map<string, Promise<void>>();
+
 export default function Dashboard({ onNavigate, onEditTransaction, onSetAddType, refreshKey }: DashboardProps) {
   const { user } = useAuthStore();
   const [metrics, setMetrics] = useState({
@@ -43,58 +45,130 @@ export default function Dashboard({ onNavigate, onEditTransaction, onSetAddType,
     thisMonthExpense: 0,
   });
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
-  const [seeded, setSeeded] = useState(false);
 
   useEffect(() => {
-    seedDefaultGroupsIfNeeded().then(() => {
-      fetchDashboardData();
-    });
-  }, [refreshKey]);
+    if (!user?.id) {
+      return;
+    }
 
-  const seedDefaultGroupsIfNeeded = async () => {
-    const { data: existing } = await supabase
-      .from('ledger_groups')
-      .select('id')
-      .eq('user_id', user?.id)
-      .limit(1);
+    let isActive = true;
 
-    if (existing && existing.length > 0) return; // Already seeded
+    const loadDashboard = async () => {
+      await seedDefaultGroupsIfNeeded(user.id);
+      if (isActive) {
+        await fetchDashboardData(user.id);
+      }
+    };
 
-    // Seed top-level groups
-    for (const group of DEFAULT_GROUPS) {
-      const { data: parent } = await supabase
+    loadDashboard();
+
+    return () => {
+      isActive = false;
+    };
+  }, [refreshKey, user?.id]);
+
+  const seedDefaultGroupsIfNeeded = async (userId: string) => {
+    if (SEEDED_USER_IDS.has(userId)) {
+      return;
+    }
+
+    const existingSeed = SEEDING_BY_USER_ID.get(userId);
+    if (existingSeed) {
+      await existingSeed;
+      return;
+    }
+
+    const seedPromise = (async () => {
+      const { data: existingGroups, error } = await supabase
         .from('ledger_groups')
-        .insert({
-          user_id: user?.id,
-          name: group.name,
-          type: group.type,
-          parent_id: null,
-          icon: group.icon,
-        })
-        .select('id')
-        .single();
+        .select('id, name, type, parent_id')
+        .eq('user_id', userId);
 
-      // Seed children if any
-      if (parent && 'children' in group && group.children) {
+      if (error) {
+        console.error('Failed to load ledger groups for default seeding:', error.message);
+        return;
+      }
+
+      const groupKey = (name: string, type: string, parentId: string | null) =>
+        `${type}::${parentId ?? 'root'}::${name.trim().toLowerCase()}`;
+
+      const existingByKey = new Map(
+        (existingGroups ?? []).map((group) => [groupKey(group.name, group.type, group.parent_id), group.id])
+      );
+
+      for (const group of DEFAULT_GROUPS) {
+        const parentKey = groupKey(group.name, group.type, null);
+        let parentId = existingByKey.get(parentKey);
+
+        if (!parentId) {
+          const { data: createdParent, error: createParentError } = await supabase
+            .from('ledger_groups')
+            .insert({
+              user_id: userId,
+              name: group.name,
+              type: group.type,
+              parent_id: null,
+              icon: group.icon,
+            })
+            .select('id')
+            .single();
+
+          if (createParentError) {
+            console.error('Failed to create default parent ledger group:', createParentError.message);
+            continue;
+          }
+
+          parentId = createdParent.id;
+          existingByKey.set(parentKey, parentId);
+        }
+
+        if (!('children' in group) || !group.children?.length || !parentId) {
+          continue;
+        }
+
         for (const child of group.children) {
-          await supabase.from('ledger_groups').insert({
-            user_id: user?.id,
-            name: child.name,
-            type: group.type,
-            parent_id: parent.id,
-            icon: child.icon,
-          });
+          const childKey = groupKey(child.name, group.type, parentId);
+          if (existingByKey.has(childKey)) {
+            continue;
+          }
+
+          const { data: createdChild, error: createChildError } = await supabase
+            .from('ledger_groups')
+            .insert({
+              user_id: userId,
+              name: child.name,
+              type: group.type,
+              parent_id: parentId,
+              icon: child.icon,
+            })
+            .select('id')
+            .single();
+
+          if (createChildError) {
+            console.error('Failed to create default child ledger group:', createChildError.message);
+            continue;
+          }
+
+          existingByKey.set(childKey, createdChild.id);
         }
       }
+
+      SEEDED_USER_IDS.add(userId);
+    })();
+
+    SEEDING_BY_USER_ID.set(userId, seedPromise);
+    try {
+      await seedPromise;
+    } finally {
+      SEEDING_BY_USER_ID.delete(userId);
     }
-    setSeeded(true);
   };
 
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = async (userId: string) => {
     const { data: vouchers } = await supabase
       .from('vouchers')
       .select('*, ledger_groups(name)')
-      .eq('user_id', user?.id)
+      .eq('user_id', userId)
       .order('date', { ascending: false });
 
     const now = new Date();

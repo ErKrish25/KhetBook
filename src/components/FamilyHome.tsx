@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store';
 import { LedgerGroup } from '../types';
+import { buildLedgerTotals, getChildren as getChildrenFromMap } from '../lib/ledger';
 import { cn, formatCurrency } from '../lib/utils';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import khetbookIcon from '../assets/khetbook-icon.png';
 
 export default function FamilyHome() {
@@ -15,13 +16,23 @@ export default function FamilyHome() {
   const [selectedGroup, setSelectedGroup] = useState<LedgerGroup | null>(null);
 
   useEffect(() => {
+    if (!ownerId) {
+      setGroups([]);
+      setVouchers([]);
+      return;
+    }
+
     fetchData();
-  }, []);
+  }, [ownerId]);
 
   const fetchData = async () => {
     const [{ data: g }, { data: v }] = await Promise.all([
       supabase.from('ledger_groups').select('*').eq('user_id', ownerId).order('name'),
-      supabase.from('vouchers').select('*').eq('user_id', ownerId).order('date', { ascending: false }),
+      supabase
+        .from('vouchers')
+        .select('id, amount, date, type, notes, ledger_group_id')
+        .eq('user_id', ownerId)
+        .order('date', { ascending: false }),
     ]);
     if (g) setGroups(g);
     if (v) setVouchers(v);
@@ -33,18 +44,14 @@ export default function FamilyHome() {
     logout();
   };
 
-  const getChildren = (parentId: string | null) => groups.filter(g => g.parent_id === parentId);
+  const { childrenMap, totalsByGroupId, descendantIdsByGroupId } = useMemo(
+    () => buildLedgerTotals(groups, vouchers),
+    [groups, vouchers]
+  );
 
-  const getAllDescendantIds = (groupId: string): string[] => {
-    const ids = [groupId];
-    for (const child of getChildren(groupId)) ids.push(...getAllDescendantIds(child.id));
-    return ids;
-  };
-
-  const getGroupTotal = (groupId: string): number => {
-    const allIds = getAllDescendantIds(groupId);
-    return vouchers.filter(v => allIds.includes(v.ledger_group_id)).reduce((s, v) => s + v.amount, 0);
-  };
+  const getChildren = (parentId: string | null) => getChildrenFromMap(childrenMap, parentId);
+  const getAllDescendantIds = (groupId: string) => descendantIdsByGroupId.get(groupId) ?? [groupId];
+  const getGroupTotal = (groupId: string) => totalsByGroupId.get(groupId) ?? 0;
 
   const currentParentId = breadcrumb.length > 0 ? breadcrumb[breadcrumb.length - 1].id : null;
   const currentLevelGroups = getChildren(currentParentId);
@@ -75,8 +82,8 @@ export default function FamilyHome() {
 
   // Transaction View
   if (viewingTx && selectedGroup) {
-    const allIds = getAllDescendantIds(selectedGroup.id);
-    const txList = vouchers.filter(v => allIds.includes(v.ledger_group_id));
+    const allIds = new Set(getAllDescendantIds(selectedGroup.id));
+    const txList = vouchers.filter(v => v.ledger_group_id && allIds.has(v.ledger_group_id));
 
     return (
       <div className="min-h-screen bg-[#fafaf9] font-body">

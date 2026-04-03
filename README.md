@@ -12,9 +12,17 @@ View your app in AI Studio: https://ai.studio/apps/1efb83ff-04a5-4385-a710-71dee
 
 **Prerequisites:**  Node.js
 
-
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Create `.env.local` from `.env.example` and set:
+   `VITE_SUPABASE_URL`
+   `VITE_SUPABASE_ANON_KEY`
+   `GEMINI_API_KEY`
 3. Run the app:
    `npm run dev`
+
+## Production Notes
+
+- Do not reintroduce destructive `DROP TABLE` or `DROP VIEW` statements in the main schema setup. Use additive migrations so releases never wipe existing user data.
+- Apply [`supabase_schema.sql`](/Users/krish/Downloads/khetbook-—-farm-accounting-app/supabase_schema.sql) as a baseline only for safe, non-destructive setup and indexing.
+- Keep deployment environments pointed at the intended Supabase project by setting explicit `VITE_SUPABASE_*` variables instead of relying on hardcoded fallbacks.

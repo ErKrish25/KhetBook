@@ -165,11 +165,18 @@ export default function Dashboard({ onNavigate, onEditTransaction, onSetAddType,
   };
 
   const fetchDashboardData = async (userId: string) => {
-    const { data: vouchers } = await supabase
-      .from('vouchers')
-      .select('*, ledger_groups(name)')
-      .eq('user_id', userId)
-      .order('date', { ascending: false });
+    const [{ data: summaryVouchers }, { data: recentVouchers }] = await Promise.all([
+      supabase
+        .from('vouchers')
+        .select('id, type, amount, date')
+        .eq('user_id', userId),
+      supabase
+        .from('vouchers')
+        .select('id, type, amount, date, notes, ledger_group_id, ledger_groups(name)')
+        .eq('user_id', userId)
+        .order('date', { ascending: false })
+        .limit(8),
+    ]);
 
     const now = new Date();
     const currentMonth = now.getMonth();
@@ -178,8 +185,8 @@ export default function Dashboard({ onNavigate, onEditTransaction, onSetAddType,
     let totalIncome = 0, totalExpense = 0;
     let thisMonthIncome = 0, thisMonthExpense = 0;
 
-    if (vouchers) {
-      vouchers.forEach(v => {
+    if (summaryVouchers) {
+      summaryVouchers.forEach(v => {
         const vDate = new Date(v.date);
         const isThisMonth = vDate.getMonth() === currentMonth && vDate.getFullYear() === currentYear;
 
@@ -191,9 +198,9 @@ export default function Dashboard({ onNavigate, onEditTransaction, onSetAddType,
           if (isThisMonth) thisMonthExpense += v.amount;
         }
       });
-
-      setRecentTransactions(vouchers.slice(0, 8));
     }
+
+    setRecentTransactions(recentVouchers ?? []);
 
     setMetrics({
       totalIncome,

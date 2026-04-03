@@ -36,7 +36,6 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
   // Add new item inline
   const [showAddItem, setShowAddItem] = useState(false);
   const [newItemName, setNewItemName] = useState('');
-  const [newItemCategory, setNewItemCategory] = useState('crop');
   const [newItemUnit, setNewItemUnit] = useState('kg');
   const [newItemRate, setNewItemRate] = useState('');
   const [addingItem, setAddingItem] = useState(false);
@@ -122,19 +121,7 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
     return map[unit?.toLowerCase()] || unit;
   };
 
-  // Valid categories that match database CHECK constraints
-  const VALID_CATEGORIES = ['crop', 'fertilizer', 'seed', 'pesticide', 'fuel', 'equipment', 'medicine', 'feed', 'dairy', 'labour', 'other'];
   const VALID_UNITS = ['kg', 'quintal', 'litre', 'unit', 'bigha', 'mun', 'bag', 'ton', 'packet'];
-
-  // Map item category to a suitable icon for the ledger group
-  const getCategoryIcon = (cat: string): string => {
-    const iconMap: Record<string, string> = {
-      crop: 'eco', fertilizer: 'spa', seed: 'grass', pesticide: 'pest_control',
-      fuel: 'local_gas_station', equipment: 'build', medicine: 'medical_services',
-      feed: 'restaurant', dairy: 'water_drop', labour: 'engineering', other: 'folder',
-    };
-    return iconMap[cat?.toLowerCase()] || 'folder';
-  };
 
   // Get top-level (root) ledger groups for the parent dropdown
   const parentLedgerOptions = groups.filter(g => g.parent_id === null);
@@ -146,12 +133,7 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
       return;
     }
 
-    // Validate category
-    const categoryVal = newItemCategory.toLowerCase().trim();
-    if (!VALID_CATEGORIES.includes(categoryVal)) {
-      setAddItemError(`Invalid category "${newItemCategory}". Choose from the options below.`);
-      return;
-    }
+    const categoryVal = 'other';
 
     // Validate unit
     if (!VALID_UNITS.includes(newItemUnit)) {
@@ -186,7 +168,7 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
       name: newItemName.trim(),
       type: entryType,
       parent_id: parentId,
-      icon: getCategoryIcon(categoryVal),
+      icon: 'folder',
     }).select('id').single();
 
     if (ledgerError) {
@@ -219,7 +201,6 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
 
     setShowAddItem(false);
     setNewItemName('');
-    setNewItemCategory('crop');
     setNewItemRate('');
     setNewItemParentLedgerId(null);
     setAddingItem(false);
@@ -273,8 +254,6 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
       }, 800);
     }
   };
-
-  const POPULAR_CATEGORIES = ['Crop', 'Seed', 'Fertilizer', 'Pesticide', 'Medicine', 'Feed', 'Dairy', 'Labour', 'Fuel', 'Equipment', 'Other'];
 
   const UNITS = ['kg', 'quintal', 'litre', 'unit', 'bigha', 'mun', 'bag', 'ton', 'packet'];
 
@@ -344,16 +323,6 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
                       className="w-full border border-stone-200 rounded-lg px-3 py-2.5 text-sm font-medium bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
                       autoFocus
                     />
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400 block">Category</label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {POPULAR_CATEGORIES.map(c => (
-                          <button key={c} onClick={() => { setNewItemCategory(c.toLowerCase()); setAddItemError(''); }} className={cn("px-2 py-1 rounded-md text-[10px] font-bold border transition-all", newItemCategory.toLowerCase() === c.toLowerCase() ? "border-blue-400 bg-blue-100 text-blue-700" : "border-stone-200 bg-white text-stone-500")}>
-                            {c}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <select value={newItemUnit} onChange={e => setNewItemUnit(e.target.value)} className="border border-stone-200 rounded-lg px-3 py-2.5 text-sm font-medium bg-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500/30">
                         {UNITS.map(u => <option key={u} value={u}>{getUnitLabel(u)}</option>)}

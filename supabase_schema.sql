@@ -7,21 +7,23 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- Drop existing tables/views to allow clean recreation (BE CAREFUL IN PRODUCTION)
-DROP VIEW IF EXISTS items_family_view;
-DROP TABLE IF EXISTS ledger_entries CASCADE;
-DROP TABLE IF EXISTS voucher_lines CASCADE;
-DROP TABLE IF EXISTS inventory_logs CASCADE;
-DROP TABLE IF EXISTS vouchers CASCADE;
-DROP TABLE IF EXISTS ledger_groups CASCADE;
-DROP TABLE IF EXISTS farm_pins CASCADE;
-DROP TABLE IF EXISTS farm_members CASCADE;
-DROP TABLE IF EXISTS items CASCADE;
-DROP TABLE IF EXISTS parties CASCADE;
-DROP TABLE IF EXISTS profiles CASCADE;
+-- IMPORTANT:
+-- This script is production-safe and intentionally avoids DROP TABLE / DROP VIEW
+-- statements so existing user data is preserved during deployments and upgrades.
+-- Use explicit migrations for incremental changes instead of destructive resets.
+
+CREATE OR REPLACE FUNCTION public.set_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$;
 
 -- 1. Profiles Table (For Settings)
-CREATE TABLE profiles (
+CREATE TABLE IF NOT EXISTS profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     farm_name TEXT,
     address TEXT,
@@ -32,7 +34,7 @@ CREATE TABLE profiles (
 );
 
 -- 2. Ledger Groups Table (Hierarchical Categories for Income/Expense)
-CREATE TABLE ledger_groups (
+CREATE TABLE IF NOT EXISTS ledger_groups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
@@ -43,7 +45,7 @@ CREATE TABLE ledger_groups (
 );
 
 -- Prevent duplicate default ledgers for the same user/parent/type/name
-CREATE UNIQUE INDEX ledger_groups_user_parent_name_type_unique_idx
+CREATE UNIQUE INDEX IF NOT EXISTS ledger_groups_user_parent_name_type_unique_idx
 ON ledger_groups (
     user_id,
     type,
@@ -52,7 +54,7 @@ ON ledger_groups (
 );
 
 -- 3. Vouchers Table (Core Transactions)
-CREATE TABLE vouchers (
+CREATE TABLE IF NOT EXISTS vouchers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     voucher_no TEXT NOT NULL,
@@ -74,7 +76,7 @@ CREATE TABLE vouchers (
 -- Income/Expense tracker. They may not be actively used.
 -- ============================================================================
 
-CREATE TABLE parties (
+CREATE TABLE IF NOT EXISTS parties (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
@@ -86,7 +88,7 @@ CREATE TABLE parties (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE items (
+CREATE TABLE IF NOT EXISTS items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
@@ -98,6 +100,9 @@ CREATE TABLE items (
             'pesticide',
             'fungicide',
             'herbicide',
+            'medicine',
+            'feed',
+            'dairy',
             'fuel',
             'equipment',
             'labour',
@@ -111,6 +116,8 @@ CREATE TABLE items (
             'quintal',
             'litre',
             'NOS',
+            'unit',
+            'bigha',
             'mun',
             'bag',
             'ton',
@@ -124,7 +131,7 @@ CREATE TABLE items (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE farm_members (
+CREATE TABLE IF NOT EXISTS farm_members (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     display_name TEXT NOT NULL,
@@ -140,7 +147,7 @@ CREATE TABLE farm_members (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE inventory_logs (
+CREATE TABLE IF NOT EXISTS inventory_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     item_id UUID REFERENCES items(id) ON DELETE CASCADE,
@@ -152,7 +159,7 @@ CREATE TABLE inventory_logs (
     changed_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE voucher_lines (
+CREATE TABLE IF NOT EXISTS voucher_lines (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     voucher_id UUID REFERENCES vouchers(id) ON DELETE CASCADE,
     item_id UUID REFERENCES items(id) ON DELETE CASCADE,
@@ -162,7 +169,7 @@ CREATE TABLE voucher_lines (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE ledger_entries (
+CREATE TABLE IF NOT EXISTS ledger_entries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     voucher_id UUID REFERENCES vouchers(id) ON DELETE CASCADE,
@@ -174,9 +181,49 @@ CREATE TABLE ledger_entries (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE VIEW items_family_view AS
+CREATE OR REPLACE VIEW items_family_view AS
 SELECT id, user_id, name, category, unit, current_stock, min_stock, created_at, updated_at
 FROM items;
+
+CREATE INDEX IF NOT EXISTS ledger_groups_user_id_idx ON ledger_groups(user_id);
+CREATE INDEX IF NOT EXISTS ledger_groups_parent_id_idx ON ledger_groups(parent_id);
+CREATE INDEX IF NOT EXISTS vouchers_user_id_date_idx ON vouchers(user_id, date DESC);
+CREATE INDEX IF NOT EXISTS vouchers_user_id_group_idx ON vouchers(user_id, ledger_group_id);
+CREATE INDEX IF NOT EXISTS items_user_id_name_idx ON items(user_id, name);
+CREATE INDEX IF NOT EXISTS farm_members_user_id_idx ON farm_members(user_id);
+CREATE INDEX IF NOT EXISTS farm_members_invite_pin_idx ON farm_members(invite_pin);
+CREATE INDEX IF NOT EXISTS voucher_lines_voucher_id_idx ON voucher_lines(voucher_id);
+CREATE INDEX IF NOT EXISTS inventory_logs_user_id_changed_at_idx ON inventory_logs(user_id, changed_at DESC);
+
+DROP TRIGGER IF EXISTS profiles_set_updated_at ON profiles;
+CREATE TRIGGER profiles_set_updated_at
+BEFORE UPDATE ON profiles
+FOR EACH ROW
+EXECUTE FUNCTION public.set_updated_at();
+
+DROP TRIGGER IF EXISTS vouchers_set_updated_at ON vouchers;
+CREATE TRIGGER vouchers_set_updated_at
+BEFORE UPDATE ON vouchers
+FOR EACH ROW
+EXECUTE FUNCTION public.set_updated_at();
+
+DROP TRIGGER IF EXISTS items_set_updated_at ON items;
+CREATE TRIGGER items_set_updated_at
+BEFORE UPDATE ON items
+FOR EACH ROW
+EXECUTE FUNCTION public.set_updated_at();
+
+DROP TRIGGER IF EXISTS parties_set_updated_at ON parties;
+CREATE TRIGGER parties_set_updated_at
+BEFORE UPDATE ON parties
+FOR EACH ROW
+EXECUTE FUNCTION public.set_updated_at();
+
+DROP TRIGGER IF EXISTS farm_members_set_updated_at ON farm_members;
+CREATE TRIGGER farm_members_set_updated_at
+BEFORE UPDATE ON farm_members
+FOR EACH ROW
+EXECUTE FUNCTION public.set_updated_at();
 
 -- =============================================
 -- Row Level Security (RLS) Configuration
@@ -193,26 +240,32 @@ ALTER TABLE voucher_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ledger_entries ENABLE ROW LEVEL SECURITY;
 
 -- Base Policies (Users see/manage their own data)
+DROP POLICY IF EXISTS "Users can manage own profile" ON profiles;
 CREATE POLICY "Users can manage own profile" ON profiles
 FOR ALL
 USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "Users can manage own ledger groups" ON ledger_groups;
 CREATE POLICY "Users can manage own ledger groups" ON ledger_groups
 FOR ALL
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can manage own vouchers" ON vouchers;
 CREATE POLICY "Users can manage own vouchers" ON vouchers
 FOR ALL
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can manage own parties" ON parties;
 CREATE POLICY "Users can manage own parties" ON parties
 FOR ALL
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can manage own items" ON items;
 CREATE POLICY "Users can manage own items" ON items
 FOR ALL
 USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can view own voucher lines" ON voucher_lines;
 CREATE POLICY "Users can view own voucher lines" ON voucher_lines
 FOR SELECT
 USING (
@@ -224,6 +277,7 @@ USING (
     )
 );
 
+DROP POLICY IF EXISTS "Users can manage own ledger entries" ON ledger_entries;
 CREATE POLICY "Users can manage own ledger entries" ON ledger_entries
 FOR ALL
 USING (auth.uid() = user_id);

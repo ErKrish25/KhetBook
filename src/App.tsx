@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { supabase } from './lib/supabase';
 import { useAuthStore } from './store';
 import { motion, AnimatePresence } from 'motion/react';
@@ -7,14 +7,14 @@ import { cn } from './lib/utils';
 import khetbookIcon from './assets/khetbook-icon.png';
 
 // Components
-import Dashboard from './components/Dashboard';
-import AddEntry from './components/AddEntry';
+const Dashboard = lazy(() => import('./components/Dashboard'));
+const AddEntry = lazy(() => import('./components/AddEntry'));
 import EditEntry from './components/EditEntry';
-import Ledger from './components/Ledger';
-import Reports from './components/Reports';
+const Ledger = lazy(() => import('./components/Ledger'));
+const Reports = lazy(() => import('./components/Reports'));
 import Auth from './components/Auth';
-import Settings from './components/Settings';
-import FamilyHome from './components/FamilyHome';
+const Settings = lazy(() => import('./components/Settings'));
+const FamilyHome = lazy(() => import('./components/FamilyHome'));
 
 export type Tab = 'dashboard' | 'add' | 'ledger' | 'reports' | 'settings';
 
@@ -113,6 +113,46 @@ export default function App() {
     trackMouse: false
   });
 
+  const renderTabContent = () => {
+    if (activeTab === 'dashboard') {
+      return (
+        <Dashboard
+          onNavigate={setActiveTab}
+          onEditTransaction={handleEditTransaction}
+          onSetAddType={(type) => {
+            setAddEntryType(type);
+            setActiveTab('add');
+          }}
+          refreshKey={refreshKey}
+        />
+      );
+    }
+
+    if (activeTab === 'add') {
+      return <AddEntry onDone={() => setActiveTab('dashboard')} initialType={addEntryType} />;
+    }
+
+    if (activeTab === 'ledger') {
+      return <Ledger onEditTransaction={handleEditTransaction} refreshKey={refreshKey} />;
+    }
+
+    if (activeTab === 'reports') {
+      return <Reports />;
+    }
+
+    return <Settings />;
+  };
+
+  const screenLoader = (
+    <div className="min-h-[40vh] flex items-center justify-center">
+      <motion.div
+        animate={{ rotate: 360 }}
+        transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+        className="w-6 h-6 border-2 border-[#1b4332] border-t-transparent rounded-full"
+      />
+    </div>
+  );
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#fafaf9] flex items-center justify-center">
@@ -130,7 +170,11 @@ export default function App() {
   }
 
   if (role === 'family_member') {
-    return <FamilyHome />;
+    return (
+      <Suspense fallback={screenLoader}>
+        <FamilyHome />
+      </Suspense>
+    );
   }
 
   return (
@@ -163,11 +207,9 @@ export default function App() {
             exit={{ opacity: 0, y: -5 }}
             transition={{ duration: 0.15 }}
           >
-            {activeTab === 'dashboard' && <Dashboard onNavigate={setActiveTab} onEditTransaction={handleEditTransaction} onSetAddType={(type) => { setAddEntryType(type); setActiveTab('add'); }} refreshKey={refreshKey} />}
-            {activeTab === 'add' && <AddEntry onDone={() => setActiveTab('dashboard')} initialType={addEntryType} />}
-            {activeTab === 'ledger' && <Ledger onEditTransaction={handleEditTransaction} refreshKey={refreshKey} />}
-            {activeTab === 'reports' && <Reports />}
-            {activeTab === 'settings' && <Settings />}
+            <Suspense fallback={screenLoader}>
+              {renderTabContent()}
+            </Suspense>
           </motion.div>
         </AnimatePresence>
       </main>

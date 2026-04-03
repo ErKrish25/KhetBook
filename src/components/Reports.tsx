@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store';
 import { LedgerGroup } from '../types';
+import { buildLedgerTotals, getChildren as getChildrenFromMap } from '../lib/ledger';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion } from 'motion/react';
 
@@ -20,7 +21,16 @@ export default function Reports() {
   const [customFrom, setCustomFrom] = useState(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]);
   const [customTo, setCustomTo] = useState(now.toISOString().split('T')[0]);
 
-  useEffect(() => { fetchData(); }, [dateRange, customFrom, customTo]);
+  useEffect(() => {
+    if (!user?.id) {
+      setGroups([]);
+      setVouchers([]);
+      setIsLoading(false);
+      return;
+    }
+
+    fetchData();
+  }, [dateRange, customFrom, customTo, user?.id]);
 
   const getDateRange = (): { from: string; to: string } => {
     const today = new Date();
@@ -47,24 +57,27 @@ export default function Reports() {
     const { from, to } = getDateRange();
     const [{ data: g }, { data: v }] = await Promise.all([
       supabase.from('ledger_groups').select('*').eq('user_id', user?.id).order('name'),
-      supabase.from('vouchers').select('*').eq('user_id', user?.id).gte('date', from).lte('date', to).order('date', { ascending: false }),
+      supabase
+        .from('vouchers')
+        .select('id, type, amount, date, notes, ledger_group_id')
+        .eq('user_id', user?.id)
+        .gte('date', from)
+        .lte('date', to)
+        .order('date', { ascending: false }),
     ]);
     if (g) setGroups(g);
     if (v) setVouchers(v);
     setIsLoading(false);
   };
 
-  // Tree helpers
-  const getChildren = (parentId: string | null) => groups.filter(g => g.parent_id === parentId);
-  const getAllDescendantIds = (groupId: string): string[] => {
-    const ids = [groupId];
-    for (const child of getChildren(groupId)) ids.push(...getAllDescendantIds(child.id));
-    return ids;
-  };
-  const getGroupTotal = (groupId: string): number => {
-    const allIds = getAllDescendantIds(groupId);
-    return vouchers.filter(v => allIds.includes(v.ledger_group_id)).reduce((s, v) => s + v.amount, 0);
-  };
+  const { childrenMap, totalsByGroupId, descendantIdsByGroupId } = useMemo(
+    () => buildLedgerTotals(groups, vouchers),
+    [groups, vouchers]
+  );
+
+  const getChildren = (parentId: string | null) => getChildrenFromMap(childrenMap, parentId);
+  const getGroupTotal = (groupId: string) => totalsByGroupId.get(groupId) ?? 0;
+  const getAllDescendantIds = (groupId: string) => descendantIdsByGroupId.get(groupId) ?? [groupId];
 
   // Computations
   const totalIncome = useMemo(() =>

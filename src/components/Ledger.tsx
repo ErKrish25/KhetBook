@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store';
 import { LedgerGroup, EntryType } from '../types';
+import { buildLedgerTotals, getChildren as getChildrenFromMap } from '../lib/ledger';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -39,9 +40,15 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
   const [contextGroup, setContextGroup] = useState<LedgerGroup | null>(null);
 
   useEffect(() => {
+    if (!user?.id) {
+      setGroups([]);
+      setVouchers([]);
+      return;
+    }
+
     fetchGroups();
     fetchAllVouchers();
-  }, [refreshKey]);
+  }, [refreshKey, user?.id]);
 
   const fetchGroups = async () => {
     const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).order('name');
@@ -49,23 +56,22 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
   };
 
   const fetchAllVouchers = async () => {
-    const { data } = await supabase.from('vouchers').select('*').eq('user_id', user?.id).order('date', { ascending: false });
+    const { data } = await supabase
+      .from('vouchers')
+      .select('id, amount, date, type, notes, ledger_group_id')
+      .eq('user_id', user?.id)
+      .order('date', { ascending: false });
     if (data) setVouchers(data);
   };
 
-  const getChildren = (parentId: string | null) => groups.filter(g => g.parent_id === parentId);
+  const { childrenMap, totalsByGroupId, descendantIdsByGroupId } = useMemo(
+    () => buildLedgerTotals(groups, vouchers),
+    [groups, vouchers]
+  );
 
-  const getGroupTotal = (groupId: string): number => {
-    let total = vouchers.filter(v => v.ledger_group_id === groupId).reduce((s, v) => s + v.amount, 0);
-    for (const child of getChildren(groupId)) total += getGroupTotal(child.id);
-    return total;
-  };
-
-  const getAllDescendantIds = (groupId: string): string[] => {
-    const ids = [groupId];
-    for (const child of getChildren(groupId)) ids.push(...getAllDescendantIds(child.id));
-    return ids;
-  };
+  const getChildren = (parentId: string | null) => getChildrenFromMap(childrenMap, parentId);
+  const getGroupTotal = (groupId: string) => totalsByGroupId.get(groupId) ?? 0;
+  const getAllDescendantIds = (groupId: string) => descendantIdsByGroupId.get(groupId) ?? [groupId];
 
   const currentParentId = breadcrumb.length > 0 ? breadcrumb[breadcrumb.length - 1].id : null;
   const currentLevelGroups = getChildren(currentParentId);
@@ -78,8 +84,8 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
       setBreadcrumb([...breadcrumb, group]);
     } else {
       setSelectedGroup(group);
-      const allIds = getAllDescendantIds(group.id);
-      setGroupTransactions(vouchers.filter(v => allIds.includes(v.ledger_group_id)));
+      const allIds = new Set(getAllDescendantIds(group.id));
+      setGroupTransactions(vouchers.filter(v => v.ledger_group_id && allIds.has(v.ledger_group_id)));
       setView('transactions');
     }
   };

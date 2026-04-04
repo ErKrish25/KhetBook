@@ -169,11 +169,13 @@ export default function Dashboard({ onNavigate, onEditTransaction, onSetAddType,
       supabase
         .from('vouchers')
         .select('id, type, amount, date')
-        .eq('user_id', userId),
+        .eq('user_id', userId)
+        .is('deleted_at', null),
       supabase
         .from('vouchers')
         .select('id, type, amount, date, notes, ledger_group_id, ledger_groups(name)')
         .eq('user_id', userId)
+        .is('deleted_at', null)
         .order('date', { ascending: false })
         .limit(8),
     ]);

@@ -4,6 +4,9 @@ import { useAuthStore } from '../store';
 import { LedgerGroup, EntryType, Item } from '../types';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
+import { getUnitLabel } from '../lib/itemUnits';
+import { logAction } from '../lib/auditLog';
+import { toast } from '../lib/useToast';
 
 interface EditEntryProps {
   transaction: any;
@@ -44,7 +47,7 @@ export default function EditEntry({ transaction, onSave, onCancel }: EditEntryPr
   useEffect(() => { fetchVoucherLine(); fetchItems(); }, []);
 
   const fetchGroups = async () => {
-    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).eq('type', entryType).order('name');
+    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).eq('type', entryType).is('deleted_at', null).order('name');
     if (data) setGroups(data);
   };
 
@@ -60,7 +63,7 @@ export default function EditEntry({ transaction, onSave, onCancel }: EditEntryPr
   };
 
   const fetchItems = async () => {
-    const { data } = await supabase.from('items').select('*').eq('user_id', user?.id).order('name');
+    const { data } = await supabase.from('items').select('*').eq('user_id', user?.id).is('deleted_at', null).order('name');
     if (data) setItems(data);
   };
 
@@ -108,11 +111,6 @@ export default function EditEntry({ transaction, onSave, onCancel }: EditEntryPr
     ? items.filter(i => i.name.toLowerCase().includes(itemSearch.toLowerCase()))
     : items;
 
-  const getUnitLabel = (unit: string) => {
-    const map: Record<string, string> = { kg: 'Kg', quintal: 'Qtl', litre: 'Litre (L)', unit: 'Pcs', bigha: 'Bigha', mun: 'MUN', bag: 'Bag', ton: 'Ton', packet: 'Packet' };
-    return map[unit?.toLowerCase()] || unit;
-  };
-
   const getGroupPath = (groupId: string | null): string => {
     if (!groupId) return '';
     const group = groups.find(g => g.id === groupId);
@@ -137,39 +135,68 @@ export default function EditEntry({ transaction, onSave, onCancel }: EditEntryPr
     if (!selectedGroupId) { setCategoryError(true); return; }
     setSaving(true);
 
-    const { error } = await supabase.from('vouchers').update({
-      type: entryType,
-      amount: finalAmount,
-      date,
-      notes: note || (selectedItem && hasItemLine ? `${selectedItem.name} — ${qtyNum} × ₹${rateNum}` : null),
-      ledger_group_id: selectedGroupId,
-    }).eq('id', transaction.id);
+    try {
+      const oldData = { type: transaction.type, amount: transaction.amount, date: transaction.date, notes: transaction.notes, ledger_group_id: transaction.ledger_group_id };
+      const newData = { type: entryType, amount: finalAmount, date, notes: note || (selectedItem && hasItemLine ? `${selectedItem.name} — ${qtyNum} × ₹${rateNum}` : null), ledger_group_id: selectedGroupId };
 
-    // Update or create voucher_line
-    if (!error && hasItemLine && selectedItemId) {
-      if (voucherLine) {
-        await supabase.from('voucher_lines').update({
-          item_id: selectedItemId, qty: qtyNum, rate: rateNum, amount: itemAmount,
-        }).eq('id', voucherLine.id);
-      } else {
-        await supabase.from('voucher_lines').insert({
-          voucher_id: transaction.id, item_id: selectedItemId, qty: qtyNum, rate: rateNum, amount: itemAmount,
-        });
+      const { error } = await supabase.from('vouchers').update(newData).eq('id', transaction.id);
+
+      // Update or create voucher_line
+      if (!error && hasItemLine && selectedItemId) {
+        if (voucherLine) {
+          await supabase.from('voucher_lines').update({
+            item_id: selectedItemId, qty: qtyNum, rate: rateNum, amount: itemAmount,
+          }).eq('id', voucherLine.id);
+        } else {
+          await supabase.from('voucher_lines').insert({
+            voucher_id: transaction.id, item_id: selectedItemId, qty: qtyNum, rate: rateNum, amount: itemAmount,
+          });
+        }
       }
-    }
-    // Remove voucher_line if user turned off item mode
-    if (!error && !hasItemLine && voucherLine) {
-      await supabase.from('voucher_lines').delete().eq('id', voucherLine.id);
-    }
+      // Remove voucher_line if user turned off item mode
+      if (!error && !hasItemLine && voucherLine) {
+        await supabase.from('voucher_lines').delete().eq('id', voucherLine.id);
+      }
 
-    setSaving(false);
-    if (!error) { setSaved(true); setTimeout(() => onSave(), 600); }
+      setSaving(false);
+      if (!error) {
+        logAction('update', 'vouchers', transaction.id, oldData, newData);
+        toast.success('Entry updated successfully');
+        setSaved(true);
+        setTimeout(() => onSave(), 600);
+      } else {
+        toast.error('Failed to save: ' + error.message);
+      }
+    } catch (err) {
+      setSaving(false);
+      toast.error('Something went wrong while saving');
+    }
   };
 
   const handleDelete = async () => {
-    if (voucherLine) await supabase.from('voucher_lines').delete().eq('id', voucherLine.id);
-    await supabase.from('vouchers').delete().eq('id', transaction.id);
-    onSave();
+    try {
+      // Soft delete: set deleted_at instead of removing the row
+      const { error } = await supabase
+        .from('vouchers')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', transaction.id);
+
+      if (error) {
+        toast.error('Failed to delete: ' + error.message);
+        return;
+      }
+
+      logAction('delete', 'vouchers', transaction.id, {
+        type: transaction.type,
+        amount: transaction.amount,
+        date: transaction.date,
+        notes: transaction.notes,
+      });
+      toast.success('Entry moved to trash (recoverable for 15 days)');
+      onSave();
+    } catch {
+      toast.error('Something went wrong while deleting');
+    }
   };
 
   return (
@@ -389,12 +416,12 @@ export default function EditEntry({ transaction, onSave, onCancel }: EditEntryPr
                 <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-3">
                   <span className="material-symbols-outlined text-2xl text-red-500">delete_forever</span>
                 </div>
-                <h3 className="text-lg font-headline font-bold text-stone-800">Delete Entry?</h3>
-                <p className="text-sm text-stone-500 mt-1">This will permanently delete this {formatCurrency(transaction.amount)} transaction.</p>
+                <h3 className="text-lg font-headline font-bold text-stone-800">Move to Trash?</h3>
+                <p className="text-sm text-stone-500 mt-1">This {formatCurrency(transaction.amount)} entry will be moved to trash. You can restore it from Settings within 15 days.</p>
               </div>
               <div className="flex gap-3">
                 <button onClick={() => setShowDeleteConfirm(false)} className="flex-1 py-3 bg-stone-100 text-stone-600 rounded-xl font-bold text-sm active:scale-[0.98]">Cancel</button>
-                <button onClick={handleDelete} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold text-sm active:scale-[0.98]">Delete</button>
+                <button onClick={handleDelete} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold text-sm active:scale-[0.98]">Move to Trash</button>
               </div>
             </motion.div>
           </motion.div>

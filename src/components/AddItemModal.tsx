@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { ItemCategory, Unit } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuthStore } from '../store';
+import { getUnitInsertCandidates, ITEM_UNIT_OPTIONS, normalizeItemUnit } from '../lib/itemUnits';
 
 interface AddItemModalProps {
   isOpen: boolean;
@@ -34,8 +35,27 @@ export default function AddItemModal({ isOpen, onClose, onSuccess }: AddItemModa
     if (!formData.name.trim()) return;
     setLoading(true);
 
-    const payload = { ...formData, user_id: user?.id };
-    const { error } = await supabase.from('items').insert([payload]);
+    const unitCandidates = getUnitInsertCandidates(formData.unit);
+    let error = null;
+
+    for (const unit of unitCandidates) {
+      const payload = { ...formData, unit: normalizeItemUnit(unit), user_id: user?.id };
+      const result = await supabase.from('items').insert([{
+        ...payload,
+        unit: unit as Unit,
+      }]);
+
+      if (!result.error) {
+        error = null;
+        break;
+      }
+
+      error = result.error;
+
+      if (!result.error.message.toLowerCase().includes('unit_check')) {
+        break;
+      }
+    }
 
     setLoading(false);
     if (!error) {
@@ -108,18 +128,14 @@ export default function AddItemModal({ isOpen, onClose, onSuccess }: AddItemModa
                   <label className="text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-1.5 block">Unit</label>
                   <select
                     value={formData.unit}
-                    onChange={(e) => setFormData({ ...formData, unit: e.target.value as Unit })}
+                    onChange={(e) => setFormData({ ...formData, unit: normalizeItemUnit(e.target.value) })}
                     className="w-full bg-white border border-stone-200 rounded-xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/30 appearance-none"
                   >
-                    <option value="kg">Kg</option>
-                    <option value="mun">Mun (20kg)</option>
-                    <option value="quintal">Quintal</option>
-                    <option value="bag">Bag / Bori</option>
-                    <option value="ton">Ton</option>
-                    <option value="litre">Litre</option>
-                    <option value="packet">Packet</option>
-                    <option value="unit">Unit</option>
-                    <option value="bigha">Bigha</option>
+                    {ITEM_UNIT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>

@@ -14,65 +14,31 @@ const Ledger = lazy(() => import('./components/Ledger'));
 const Reports = lazy(() => import('./components/Reports'));
 import Auth from './components/Auth';
 const Settings = lazy(() => import('./components/Settings'));
-const FamilyHome = lazy(() => import('./components/FamilyHome'));
+import ToastContainer from './components/Toast';
 
 export type Tab = 'dashboard' | 'add' | 'ledger' | 'reports' | 'settings';
 
 export default function App() {
-  const { user, member, role, setUser, setMember, setRole, setOwnerId } = useAuthStore();
+  const { user, setUser } = useAuthStore();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [isLoading, setLoading] = useState(true);
   const [editingTransaction, setEditingTransaction] = useState<any>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [addEntryType, setAddEntryType] = useState<'income' | 'expense'>('expense');
 
-  const restoreAuthState = (session: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
-    const isFamily = localStorage.getItem('khetbook_family_session') === 'true';
-    const familyPinData = localStorage.getItem('khetbook_family_pin');
-
-    if (!session) {
-      setUser(null);
-      setMember(null);
-      setRole(null);
-      setOwnerId(null);
-      localStorage.removeItem('khetbook_family_session');
-      return;
-    }
-
-    setUser(session.user);
-    setMember(null);
-
-    if (isFamily && familyPinData) {
-      try {
-        const parsed = JSON.parse(familyPinData);
-        if (parsed?.ownerId) {
-          setRole('family_member');
-          setOwnerId(parsed.ownerId);
-          return;
-        }
-      } catch {
-        // fall back
-      }
-      localStorage.removeItem('khetbook_family_session');
-    }
-
-    setRole('owner');
-    setOwnerId(session.user.id);
-  };
-
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      restoreAuthState(session);
+      setUser(session?.user ?? null);
       setLoading(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      restoreAuthState(session);
+      setUser(session?.user ?? null);
       setLoading(false);
     });
 
     return () => subscription.unsubscribe();
-  }, [setMember, setOwnerId, setRole, setUser]);
+  }, [setUser]);
 
   const handleEditTransaction = (tx: any) => {
     setEditingTransaction(tx);
@@ -80,7 +46,7 @@ export default function App() {
 
   const handleEditSave = () => {
     setEditingTransaction(null);
-    setRefreshKey(k => k + 1); // Force child components to refresh
+    setRefreshKey(k => k + 1);
   };
 
   const handleEditCancel = () => {
@@ -96,14 +62,14 @@ export default function App() {
 
   const swipeHandlers = useSwipeable({
     onSwipedLeft: () => {
-      if (!user || role !== 'owner') return;
+      if (!user) return;
       const currentIndex = navItems.findIndex(item => item.id === activeTab);
       if (currentIndex >= 0 && currentIndex < navItems.length - 1) {
         setActiveTab(navItems[currentIndex + 1].id as Tab);
       }
     },
     onSwipedRight: () => {
-      if (!user || role !== 'owner') return;
+      if (!user) return;
       const currentIndex = navItems.findIndex(item => item.id === activeTab);
       if (currentIndex > 0) {
         setActiveTab(navItems[currentIndex - 1].id as Tab);
@@ -165,20 +131,13 @@ export default function App() {
     );
   }
 
-  if (!user && !member) {
+  if (!user) {
     return <Auth />;
-  }
-
-  if (role === 'family_member') {
-    return (
-      <Suspense fallback={screenLoader}>
-        <FamilyHome />
-      </Suspense>
-    );
   }
 
   return (
     <div {...swipeHandlers} className="min-h-screen bg-[#fafaf9] text-stone-800 font-body pb-24 overflow-x-hidden">
+      <ToastContainer />
       {/* TopAppBar */}
       <header className="fixed top-0 w-full z-50 bg-white/90 backdrop-blur-md flex justify-between items-center px-5 h-14 border-b border-stone-100 pt-safe">
         <div className="flex items-center gap-3">

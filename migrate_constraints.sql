@@ -6,10 +6,11 @@
 -- 1. Drop the old restrictive CHECK constraints
 ALTER TABLE items DROP CONSTRAINT IF EXISTS items_category_check;
 ALTER TABLE items DROP CONSTRAINT IF EXISTS items_unit_check;
+ALTER TABLE items DROP CONSTRAINT IF EXISTS item_unit_check;
 
 -- 2. Re-add with expanded values
 ALTER TABLE items ADD CONSTRAINT items_category_check 
   CHECK (category IN ('crop', 'fertilizer', 'seed', 'pesticide', 'fuel', 'equipment', 'medicine', 'feed', 'dairy', 'labour', 'other'));
 
-ALTER TABLE items ADD CONSTRAINT items_unit_check 
-  CHECK (unit IN ('kg', 'quintal', 'litre', 'unit', 'bigha', 'mun', 'bag', 'ton', 'packet'));
+ALTER TABLE items ADD CONSTRAINT items_unit_check
+  CHECK (unit IN ('kg', 'gram', 'quintal', 'litre', 'unit', 'NOS', 'bigha', 'mun', 'bag', 'ton', 'packet'));

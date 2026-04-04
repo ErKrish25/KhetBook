@@ -4,6 +4,9 @@ import { useAuthStore } from '../store';
 import { LedgerGroup, EntryType, Item } from '../types';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
+import { getUnitInsertCandidates, getUnitLabel, ITEM_UNIT_OPTIONS, normalizeItemUnit, VALID_ITEM_UNITS } from '../lib/itemUnits';
+import { logAction } from '../lib/auditLog';
+import { toast } from '../lib/useToast';
 
 interface AddEntryProps {
   onDone: () => void;
@@ -48,7 +51,7 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
   }, [entryType]);
 
   const fetchGroups = async () => {
-    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).eq('type', entryType).order('name');
+    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).eq('type', entryType).is('deleted_at', null).order('name');
     if (data) setGroups(data);
     setSelectedGroupId(null);
     setBreadcrumb([]);
@@ -56,13 +59,13 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
 
   // Refresh groups without resetting selection (used after creating new items/groups)
   const refreshGroups = async (): Promise<LedgerGroup[]> => {
-    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).eq('type', entryType).order('name');
+    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).eq('type', entryType).is('deleted_at', null).order('name');
     if (data) setGroups(data);
     return data || [];
   };
 
   const fetchItems = async () => {
-    const { data } = await supabase.from('items').select('*').eq('user_id', user?.id).order('name');
+    const { data } = await supabase.from('items').select('*').eq('user_id', user?.id).is('deleted_at', null).order('name');
     if (data) setItems(data);
   };
 
@@ -116,13 +119,6 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
     ? items.filter(i => i.name.toLowerCase().includes(itemSearch.toLowerCase()))
     : items;
 
-  const getUnitLabel = (unit: string) => {
-    const map: Record<string, string> = { kg: 'Kg', quintal: 'Qtl', litre: 'Litre (L)', unit: 'Pcs', bigha: 'Bigha', mun: 'MUN', bag: 'Bag', ton: 'Ton', packet: 'Packet' };
-    return map[unit?.toLowerCase()] || unit;
-  };
-
-  const VALID_UNITS = ['kg', 'quintal', 'litre', 'unit', 'bigha', 'mun', 'bag', 'ton', 'packet'];
-
   // Get top-level (root) ledger groups for the parent dropdown
   const parentLedgerOptions = groups.filter(g => g.parent_id === null);
 
@@ -136,7 +132,9 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
     const categoryVal = 'other';
 
     // Validate unit
-    if (!VALID_UNITS.includes(newItemUnit)) {
+    const normalizedUnit = normalizeItemUnit(newItemUnit);
+
+    if (!VALID_ITEM_UNITS.includes(normalizedUnit as (typeof VALID_ITEM_UNITS)[number])) {
       setAddItemError(`Invalid unit "${newItemUnit}".`);
       return;
     }
@@ -144,15 +142,32 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
     setAddItemError('');
     setAddingItem(true);
 
-    const { data, error } = await supabase.from('items').insert({
-      user_id: user?.id,
-      name: newItemName.trim(),
-      category: categoryVal,
-      unit: newItemUnit,
-      rate: parseFloat(newItemRate) || 0,
-      current_stock: 0,
-      min_stock: 0,
-    }).select().single();
+    let data = null;
+    let error = null;
+
+    for (const unit of getUnitInsertCandidates(normalizedUnit)) {
+      const result = await supabase.from('items').insert({
+        user_id: user?.id,
+        name: newItemName.trim(),
+        category: categoryVal,
+        unit,
+        rate: parseFloat(newItemRate) || 0,
+        current_stock: 0,
+        min_stock: 0,
+      }).select().single();
+
+      if (!result.error) {
+        data = result.data;
+        error = null;
+        break;
+      }
+
+      error = result.error;
+
+      if (!result.error.message.toLowerCase().includes('unit_check')) {
+        break;
+      }
+    }
 
     if (error || !data) {
       setAddingItem(false);
@@ -238,7 +253,9 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
     }
 
     setSaving(false);
-    if (!error) {
+    if (!error && voucher) {
+      logAction('create', 'vouchers', voucher.id, null, { type: entryType, amount: finalAmount, date, notes: note || null });
+      toast.success(`${entryType === 'income' ? 'Income' : 'Expense'} of ${formatCurrency(finalAmount)} added`);
       setSaved(true);
       setTimeout(() => {
         setSaved(false);
@@ -252,10 +269,10 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
         setUseItem(false);
         onDone();
       }, 800);
+    } else if (error) {
+      toast.error('Failed to save: ' + error.message);
     }
   };
-
-  const UNITS = ['kg', 'quintal', 'litre', 'unit', 'bigha', 'mun', 'bag', 'ton', 'packet'];
 
   return (
     <div className="space-y-5 pb-8">
@@ -324,8 +341,8 @@ export default function AddEntry({ onDone, initialType = 'expense' }: AddEntryPr
                       autoFocus
                     />
                     <div className="grid grid-cols-2 gap-2">
-                      <select value={newItemUnit} onChange={e => setNewItemUnit(e.target.value)} className="border border-stone-200 rounded-lg px-3 py-2.5 text-sm font-medium bg-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500/30">
-                        {UNITS.map(u => <option key={u} value={u}>{getUnitLabel(u)}</option>)}
+                      <select value={newItemUnit} onChange={e => setNewItemUnit(normalizeItemUnit(e.target.value))} className="border border-stone-200 rounded-lg px-3 py-2.5 text-sm font-medium bg-white appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500/30">
+                        {ITEM_UNIT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                       </select>
                       <input
                         inputMode="decimal"

@@ -6,7 +6,7 @@ import { cn } from '../lib/utils';
 import khetbookIcon from '../assets/khetbook-icon.png';
 
 export default function Auth() {
-  const { setUser, setMember, setRole, setOwnerId } = useAuthStore();
+  const { setUser } = useAuthStore();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
@@ -33,9 +33,6 @@ export default function Auth() {
         setMessage({ type: 'error', text: error.message });
       } else if (data.user) {
         setUser(data.user);
-        setMember(null);
-        setRole('owner');
-        setOwnerId(data.user.id);
       }
     }
     setIsLoading(false);

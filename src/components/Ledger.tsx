@@ -5,6 +5,9 @@ import { LedgerGroup, EntryType } from '../types';
 import { buildLedgerTotals, getChildren as getChildrenFromMap } from '../lib/ledger';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
+import { logAction } from '../lib/auditLog';
+import { toast } from '../lib/useToast';
+import ConfirmModal from './ConfirmModal';
 
 type LedgerView = 'tree' | 'transactions' | 'addGroup' | 'editGroup';
 
@@ -39,6 +42,9 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
   // Context menu
   const [contextGroup, setContextGroup] = useState<LedgerGroup | null>(null);
 
+  // Delete confirmation
+  const [deleteTarget, setDeleteTarget] = useState<LedgerGroup | null>(null);
+
   useEffect(() => {
     if (!user?.id) {
       setGroups([]);
@@ -51,7 +57,7 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
   }, [refreshKey, user?.id]);
 
   const fetchGroups = async () => {
-    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).order('name');
+    const { data } = await supabase.from('ledger_groups').select('*').eq('user_id', user?.id).is('deleted_at', null).order('name');
     if (data) setGroups(data);
   };
 
@@ -60,6 +66,7 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
       .from('vouchers')
       .select('id, amount, date, type, notes, ledger_group_id')
       .eq('user_id', user?.id)
+      .is('deleted_at', null)
       .order('date', { ascending: false });
     if (data) setVouchers(data);
   };
@@ -100,10 +107,16 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
   const handleAddGroup = async () => {
     if (!newGroupName.trim()) return;
     setAddSaving(true);
-    await supabase.from('ledger_groups').insert({
+    const { data, error } = await supabase.from('ledger_groups').insert({
       user_id: user?.id, name: newGroupName.trim(), type: newGroupType, parent_id: newGroupParentId, icon: newGroupIcon,
-    });
+    }).select('id').single();
     setAddSaving(false);
+    if (error) {
+      toast.error('Failed to create category: ' + error.message);
+      return;
+    }
+    if (data) logAction('create', 'ledger_groups', data.id, null, { name: newGroupName.trim(), type: newGroupType });
+    toast.success('Category created');
     setNewGroupName('');
     setView('tree');
     fetchGroups();
@@ -121,23 +134,36 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
   const handleSaveEdit = async () => {
     if (!editingGroup || !editName.trim()) return;
     setEditSaving(true);
-    await supabase.from('ledger_groups').update({
-      name: editName.trim(), icon: editIcon, parent_id: editParentId,
-    }).eq('id', editingGroup.id);
+    const oldData = { name: editingGroup.name, icon: editingGroup.icon, parent_id: editingGroup.parent_id };
+    const newData = { name: editName.trim(), icon: editIcon, parent_id: editParentId };
+    const { error } = await supabase.from('ledger_groups').update(newData).eq('id', editingGroup.id);
     setEditSaving(false);
+    if (error) {
+      toast.error('Failed to save: ' + error.message);
+      return;
+    }
+    logAction('update', 'ledger_groups', editingGroup.id, oldData, newData);
+    toast.success('Category updated');
     setEditingGroup(null);
     setView('tree');
     fetchGroups();
   };
 
   const handleDeleteGroup = async (group: LedgerGroup) => {
-    const children = getChildren(group.id);
-    const total = getGroupTotal(group.id);
-    const msg = children.length > 0
-      ? `Delete "${group.name}" and its ${children.length} sub-categories? (${formatCurrency(total)} in entries will be unlinked)`
-      : `Delete "${group.name}"? (${formatCurrency(total)} in entries will be unlinked)`;
-    if (!confirm(msg)) return;
-    await supabase.from('ledger_groups').delete().eq('id', group.id);
+    // Soft delete: set deleted_at instead of removing the row
+    const { error } = await supabase
+      .from('ledger_groups')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', group.id);
+
+    if (error) {
+      toast.error('Failed to delete: ' + error.message);
+      return;
+    }
+
+    logAction('delete', 'ledger_groups', group.id, { name: group.name, type: group.type });
+    toast.success(`"${group.name}" moved to trash`);
+    setDeleteTarget(null);
     setContextGroup(null);
     setBreadcrumb([]);
     fetchGroups();
@@ -274,7 +300,7 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
           </div>
           <div className="flex gap-2">
             <button onClick={handleSaveEdit} disabled={editSaving || !editName.trim()} className="flex-1 py-3.5 bg-[#1b4332] text-white rounded-xl font-bold text-sm active:scale-[0.98] disabled:opacity-50">{editSaving ? 'Saving...' : 'Save Changes'}</button>
-            <button onClick={() => handleDeleteGroup(editingGroup)} className="py-3.5 px-4 bg-red-50 text-red-500 border border-red-200 rounded-xl font-bold text-sm active:scale-[0.98]">
+            <button onClick={() => setDeleteTarget(editingGroup)} className="py-3.5 px-4 bg-red-50 text-red-500 border border-red-200 rounded-xl font-bold text-sm active:scale-[0.98]">
               <span className="material-symbols-outlined text-lg">delete</span>
             </button>
           </div>
@@ -331,7 +357,7 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
                 <button onClick={() => handleOpenEdit(group)} className="flex-1 py-2 bg-white border border-stone-200 rounded-lg text-xs font-bold text-stone-600 flex items-center justify-center gap-1 active:scale-95">
                   <span className="material-symbols-outlined text-sm">edit</span>Edit
                 </button>
-                <button onClick={() => handleDeleteGroup(group)} className="flex-1 py-2 bg-red-50 border border-red-200 rounded-lg text-xs font-bold text-red-500 flex items-center justify-center gap-1 active:scale-95">
+                <button onClick={() => { setDeleteTarget(group); setContextGroup(null); }} className="flex-1 py-2 bg-red-50 border border-red-200 rounded-lg text-xs font-bold text-red-500 flex items-center justify-center gap-1 active:scale-95">
                   <span className="material-symbols-outlined text-sm">delete</span>Delete
                 </button>
               </div>
@@ -342,71 +368,91 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
     );
   };
 
+  const deleteMsg = deleteTarget
+    ? (() => {
+        const children = getChildren(deleteTarget.id);
+        const total = getGroupTotal(deleteTarget.id);
+        return children.length > 0
+          ? `Move "${deleteTarget.name}" and its ${children.length} sub-categories to trash? (${formatCurrency(total)} in entries will be unlinked)`
+          : `Move "${deleteTarget.name}" to trash? (${formatCurrency(total)} in entries will be unlinked). Recoverable for 15 days.`;
+      })()
+    : '';
+
   return (
-    <div className="space-y-5 pb-8">
-      {/* Hero */}
-      <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-[#1b4332] text-white p-5 rounded-3xl relative overflow-hidden">
-        <div className="absolute -right-8 -top-8 w-32 h-32 bg-white/5 rounded-full" />
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-white/60 mb-1">Ledger Groups</p>
-        <div className="grid grid-cols-2 gap-2">
-          <div className="bg-emerald-800/50 p-3 rounded-xl">
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-white/60 mb-1">Total Income</p>
-            <p className="text-lg font-headline font-extrabold"><span className="text-white/50 text-xs mr-0.5">₹</span>{totalIncome.toLocaleString('en-IN')}</p>
-          </div>
-          <div className="bg-emerald-800/50 p-3 rounded-xl">
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-white/60 mb-1">Total Expense</p>
-            <p className="text-lg font-headline font-extrabold"><span className="text-white/50 text-xs mr-0.5">₹</span>{totalExpense.toLocaleString('en-IN')}</p>
-          </div>
-        </div>
-      </motion.section>
-
-      {/* Breadcrumb */}
-      {breadcrumb.length > 0 && (
-        <div className="flex items-center gap-1 flex-wrap">
-          <button onClick={() => handleBreadcrumbTap(-1)} className="text-xs font-bold text-emerald-600 active:scale-95">All</button>
-          {breadcrumb.map((bc, i) => (
-            <div key={bc.id} className="flex items-center gap-1">
-              <span className="text-stone-300 text-xs">›</span>
-              <button onClick={() => handleBreadcrumbTap(i)} className={cn("text-xs font-bold active:scale-95", i === breadcrumb.length - 1 ? "text-stone-700" : "text-emerald-600")}>{bc.name}</button>
+    <>
+      <div className="space-y-5 pb-8">
+        {/* Hero */}
+        <motion.section initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-[#1b4332] text-white p-5 rounded-3xl relative overflow-hidden">
+          <div className="absolute -right-8 -top-8 w-32 h-32 bg-white/5 rounded-full" />
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-white/60 mb-1">Ledger Groups</p>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="bg-emerald-800/50 p-3 rounded-xl">
+              <p className="text-[9px] font-semibold uppercase tracking-widest text-white/60 mb-1">Total Income</p>
+              <p className="text-lg font-headline font-extrabold"><span className="text-white/50 text-xs mr-0.5">₹</span>{totalIncome.toLocaleString('en-IN')}</p>
             </div>
-          ))}
-        </div>
-      )}
+            <div className="bg-emerald-800/50 p-3 rounded-xl">
+              <p className="text-[9px] font-semibold uppercase tracking-widest text-white/60 mb-1">Total Expense</p>
+              <p className="text-lg font-headline font-extrabold"><span className="text-white/50 text-xs mr-0.5">₹</span>{totalExpense.toLocaleString('en-IN')}</p>
+            </div>
+          </div>
+        </motion.section>
 
-      {/* Groups */}
-      {currentParentId === null ? (
-        <>
-          <section>
-            <h4 className="font-headline font-bold text-emerald-700 text-[13px] uppercase tracking-wider mb-3 flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-base">trending_up</span>Income
-            </h4>
-            <div className="space-y-2">{incomeGroups.map((g, i) => renderGroupCard(g, i))}</div>
-          </section>
-          <section>
-            <h4 className="font-headline font-bold text-red-600 text-[13px] uppercase tracking-wider mb-3 flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-base">trending_down</span>Expense
-            </h4>
-            <div className="space-y-2">{expenseGroups.map((g, i) => renderGroupCard(g, i))}</div>
-          </section>
-        </>
-      ) : (
-        <section>
-          <div className="space-y-2">{currentLevelGroups.map((g, i) => renderGroupCard(g, i))}</div>
-          {currentLevelGroups.length === 0 && <p className="text-xs text-stone-400 text-center py-3">No sub-categories.</p>}
-        </section>
-      )}
+        {/* Breadcrumb */}
+        {breadcrumb.length > 0 && (
+          <div className="flex items-center gap-1 flex-wrap">
+            <button onClick={() => handleBreadcrumbTap(-1)} className="text-xs font-bold text-emerald-600 active:scale-95">All</button>
+            {breadcrumb.map((bc, i) => (
+              <div key={bc.id} className="flex items-center gap-1">
+                <span className="text-stone-300 text-xs">›</span>
+                <button onClick={() => handleBreadcrumbTap(i)} className={cn("text-xs font-bold active:scale-95", i === breadcrumb.length - 1 ? "text-stone-700" : "text-emerald-600")}>{bc.name}</button>
+              </div>
+            ))}
+          </div>
+        )}
 
-      {/* Add Group FAB */}
-      <button
-        onClick={() => {
-          setNewGroupParentId(currentParentId);
-          setNewGroupType(breadcrumb.length > 0 ? breadcrumb[0].type as EntryType : 'expense');
-          setView('addGroup');
-        }}
-        className="fixed bottom-24 right-5 w-14 h-14 bg-[#1b4332] text-white rounded-2xl shadow-lg shadow-emerald-900/30 flex items-center justify-center active:scale-90 transition-all z-40"
-      >
-        <span className="material-symbols-outlined text-2xl">add</span>
-      </button>
-    </div>
+        {/* Groups */}
+        {currentParentId === null ? (
+          <>
+            <section>
+              <h4 className="font-headline font-bold text-emerald-700 text-[13px] uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-base">trending_up</span>Income
+              </h4>
+              <div className="space-y-2">{incomeGroups.map((g, i) => renderGroupCard(g, i))}</div>
+            </section>
+            <section>
+              <h4 className="font-headline font-bold text-red-600 text-[13px] uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-base">trending_down</span>Expense
+              </h4>
+              <div className="space-y-2">{expenseGroups.map((g, i) => renderGroupCard(g, i))}</div>
+            </section>
+          </>
+        ) : (
+          <section>
+            <div className="space-y-2">{currentLevelGroups.map((g, i) => renderGroupCard(g, i))}</div>
+            {currentLevelGroups.length === 0 && <p className="text-xs text-stone-400 text-center py-3">No sub-categories.</p>}
+          </section>
+        )}
+
+        {/* Add Group FAB */}
+        <button
+          onClick={() => {
+            setNewGroupParentId(currentParentId);
+            setNewGroupType(breadcrumb.length > 0 ? breadcrumb[0].type as EntryType : 'expense');
+            setView('addGroup');
+          }}
+          className="fixed bottom-24 right-5 w-14 h-14 bg-[#1b4332] text-white rounded-2xl shadow-lg shadow-emerald-900/30 flex items-center justify-center active:scale-90 transition-all z-40"
+        >
+          <span className="material-symbols-outlined text-2xl">add</span>
+        </button>
+      </div>
+      <ConfirmModal
+        isOpen={!!deleteTarget}
+        title="Move to Trash?"
+        message={deleteMsg}
+        onConfirm={() => { if (deleteTarget) handleDeleteGroup(deleteTarget); }}
+        onCancel={() => setDeleteTarget(null)}
+        confirmText="Move to Trash"
+      />
+    </>
   );
 }

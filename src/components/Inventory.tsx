@@ -4,16 +4,19 @@ import { Item, Unit } from '../types';
 import { cn, formatCurrency } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuthStore } from '../store';
+import { getUnitLabel } from '../lib/itemUnits';
 import AddItemModal from './AddItemModal';
 import ConfirmModal from './ConfirmModal';
 import EditTransactionModal from './EditTransactionModal';
+import { logAction } from '../lib/auditLog';
+import { toast } from '../lib/useToast';
 
 type StockFilter = 'all' | 'crop' | 'inputs' | 'equipment';
 type StockView = 'list' | 'detail' | 'stockAction';
 type StockActionType = 'in' | 'out';
 
 export default function Inventory() {
-  const { role, user } = useAuthStore();
+  const { user } = useAuthStore();
   const [items, setItems] = useState<Item[]>([]);
   const [search, setSearch] = useState('');
   const [stockFilter, setStockFilter] = useState<StockFilter>('all');
@@ -56,6 +59,7 @@ export default function Inventory() {
       .from('items')
       .select('*')
       .eq('user_id', user?.id)
+      .is('deleted_at', null)
       .order('name');
 
     if (data) {
@@ -173,7 +177,21 @@ export default function Inventory() {
 
   const handleDelete = async () => {
     if (!deleteId) return;
-    await supabase.from('items').delete().eq('id', deleteId);
+    // Soft delete: set deleted_at instead of removing the row
+    const item = items.find(i => i.id === deleteId);
+    const { error } = await supabase
+      .from('items')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', deleteId);
+
+    if (error) {
+      toast.error('Failed to delete: ' + error.message);
+      setDeleteId(null);
+      return;
+    }
+
+    if (item) logAction('delete', 'items', deleteId, { name: item.name, category: item.category });
+    toast.success(`"${item?.name || 'Item'}" moved to trash`);
     fetchItems();
     setDeleteId(null);
     if (selectedItem?.id === deleteId) setView('list');
@@ -181,11 +199,7 @@ export default function Inventory() {
 
   // Helpers
   const getUnitDisplay = (unit: string) => {
-    const map: Record<string, string> = {
-      kg: 'Kg', mun: 'Mun', quintal: 'Qtl', bag: 'Bag',
-      ton: 'Ton', litre: 'Ltr', unit: 'Pcs', bigha: 'Bigha'
-    };
-    return map[unit?.toLowerCase()] || unit;
+    return getUnitLabel(unit);
   };
 
   const getItemIcon = (category: string) => {
@@ -548,7 +562,7 @@ export default function Inventory() {
         <ConfirmModal
           isOpen={!!deleteId}
           title="Delete Item"
-          message="Are you sure you want to delete this item? This action cannot be undone."
+          message="Are you sure? This item will be moved to trash and can be restored within 15 days."
           onConfirm={handleDelete}
           onCancel={() => setDeleteId(null)}
           confirmText="Delete"
@@ -779,7 +793,7 @@ export default function Inventory() {
       <ConfirmModal
         isOpen={!!deleteId}
         title="Delete Item"
-        message="Are you sure you want to delete this item? This action cannot be undone."
+        message="Are you sure? This item will be moved to trash and can be restored within 15 days."
         onConfirm={handleDelete}
         onCancel={() => setDeleteId(null)}
         confirmText="Delete"

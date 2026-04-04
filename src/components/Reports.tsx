@@ -56,11 +56,12 @@ export default function Reports() {
     setIsLoading(true);
     const { from, to } = getDateRange();
     const [{ data: g }, { data: v }] = await Promise.all([
-      supabase.from('ledger_groups').select('*').eq('user_id', user?.id).order('name'),
+      supabase.from('ledger_groups').select('*').eq('user_id', user?.id).is('deleted_at', null).order('name'),
       supabase
         .from('vouchers')
         .select('id, type, amount, date, notes, ledger_group_id')
         .eq('user_id', user?.id)
+        .is('deleted_at', null)
         .gte('date', from)
         .lte('date', to)
         .order('date', { ascending: false }),

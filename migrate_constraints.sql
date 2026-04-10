@@ -13,4 +13,4 @@ ALTER TABLE items ADD CONSTRAINT items_category_check
   CHECK (category IN ('crop', 'fertilizer', 'seed', 'pesticide', 'fuel', 'equipment', 'medicine', 'feed', 'dairy', 'labour', 'other'));
 
 ALTER TABLE items ADD CONSTRAINT items_unit_check
-  CHECK (unit IN ('kg', 'gram', 'quintal', 'litre', 'unit', 'NOS', 'bigha', 'mun', 'bag', 'ton', 'packet'));
+  CHECK (unit IN ('kg', 'gram', 'quintal', 'litre', 'unit', 'NOS', 'QTY', 'mun', 'bag', 'ton', 'packet'));

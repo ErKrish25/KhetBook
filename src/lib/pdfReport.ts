@@ -2,6 +2,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import type { LedgerGroup } from '../types';
 import { buildLedgerTotals, getChildren as getChildrenFromMap } from './ledger';
+import { registerGujaratiFonts, UNICODE_FONT } from './fonts/registerFonts';
 
 // ============================================================================
 // Types
@@ -50,6 +51,10 @@ const WHITE: [number, number, number] = [255, 255, 255];
 
 const M = 15; // margin
 
+// The font family to use throughout the PDF.
+// After registerGujaratiFonts(), this supports Latin + Gujarati + Devanagari glyphs.
+const FONT = UNICODE_FONT;
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -81,15 +86,21 @@ function fmtDateShort(d: string): string {
 
 // ============================================================================
 // Main generator — Tally-style professional report
+// Now async to support dynamic font loading for Gujarati/Unicode text
 // ============================================================================
 
-export function generateReport(options: ReportOptions) {
+export async function generateReport(options: ReportOptions) {
   const {
     scope, dateRangeLabel, dateFrom, dateTo,
     farmProfile, groups, vouchers, filteredGroupId,
   } = options;
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+  // Register Unicode font (Noto Sans Gujarati) that handles Latin + Gujarati glyphs.
+  // This is dynamically imported so the ~400KB font data only loads when generating PDFs.
+  await registerGujaratiFonts(doc);
+
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
   const contentW = W - M * 2;
@@ -105,7 +116,7 @@ export function generateReport(options: ReportOptions) {
     doc.setLineWidth(0.3);
     doc.line(M, H - 14, W - M, H - 14);
     doc.setFontSize(7);
-    doc.setFont('helvetica', 'normal');
+    doc.setFont(FONT, 'normal');
     doc.setTextColor(...MID);
     doc.text(`${farmProfile.name || 'Khetbook'}`, M, H - 9);
     doc.text(`Page ${currentPage}`, W - M, H - 9, { align: 'right' });
@@ -127,7 +138,7 @@ export function generateReport(options: ReportOptions) {
   // Company name — large, bold, centered
   doc.setTextColor(...BLACK);
   doc.setFontSize(16);
-  doc.setFont('helvetica', 'bold');
+  doc.setFont(FONT, 'bold');
   doc.text(farmProfile.name || 'Khetbook', W / 2, y + 6, { align: 'center' });
   y += 9;
 
@@ -139,7 +150,7 @@ export function generateReport(options: ReportOptions) {
 
   if (infoParts.length > 0) {
     doc.setFontSize(8);
-    doc.setFont('helvetica', 'normal');
+    doc.setFont(FONT, 'normal');
     doc.setTextColor(...MID);
     doc.text(infoParts.join('  |  '), W / 2, y + 2, { align: 'center' });
     y += 5;
@@ -159,14 +170,14 @@ export function generateReport(options: ReportOptions) {
     : 'Ledger Statement';
 
   doc.setFontSize(11);
-  doc.setFont('helvetica', 'bold');
+  doc.setFont(FONT, 'bold');
   doc.setTextColor(...BLACK);
   doc.text(reportTitle, W / 2, y + 4, { align: 'center' });
   y += 7;
 
   // Period
   doc.setFontSize(8);
-  doc.setFont('helvetica', 'normal');
+  doc.setFont(FONT, 'normal');
   doc.setTextColor(...MID);
   doc.text(`${fmtDate(dateFrom)} to ${fmtDate(dateTo)}  (${dateRangeLabel})`, W / 2, y + 2, { align: 'center' });
   y += 5;
@@ -219,7 +230,7 @@ export function generateReport(options: ReportOptions) {
       }
 
       doc.setFontSize(9);
-      doc.setFont('helvetica', opts?.bold ? 'bold' : 'normal');
+      doc.setFont(FONT, opts?.bold ? 'bold' : 'normal');
       doc.setTextColor(...DARK);
       doc.text(label, M + 2, y + 4);
       doc.text(value, W - M - 2, y + 4, { align: 'right' });
@@ -291,7 +302,7 @@ export function generateReport(options: ReportOptions) {
 
     // Section title
     doc.setFontSize(10);
-    doc.setFont('helvetica', 'bold');
+    doc.setFont(FONT, 'bold');
     doc.setTextColor(...BLACK);
     doc.text(section.title, M, y + 3);
     y += 6;
@@ -362,6 +373,7 @@ export function generateReport(options: ReportOptions) {
         cellPadding: { top: 2.5, bottom: 2.5, left: 3, right: 3 },
         lineWidth: { bottom: 0.3, top: 0.3, left: 0, right: 0 } as any,
         lineColor: BLACK,
+        font: FONT,
       },
 
       columnStyles: {
@@ -376,7 +388,7 @@ export function generateReport(options: ReportOptions) {
         overflow: 'linebreak',
         lineWidth: 0,
         textColor: DARK,
-        font: 'helvetica',
+        font: FONT,
       },
 
       didParseCell: (data) => {
@@ -457,7 +469,7 @@ export function generateReport(options: ReportOptions) {
         ensureSpace(20);
 
         doc.setFontSize(10);
-        doc.setFont('helvetica', 'bold');
+        doc.setFont(FONT, 'bold');
         doc.setTextColor(...BLACK);
         doc.text('Transaction Details', M, y + 3);
         y += 7;
@@ -490,6 +502,7 @@ export function generateReport(options: ReportOptions) {
             cellPadding: { top: 2.5, bottom: 2.5, left: 3, right: 3 },
             lineWidth: { bottom: 0.3, top: 0.3, left: 0, right: 0 } as any,
             lineColor: BLACK,
+            font: FONT,
           },
           columnStyles: {
             0: { cellWidth: 22, halign: 'left' },
@@ -503,6 +516,7 @@ export function generateReport(options: ReportOptions) {
             textColor: DARK,
             lineColor: [230, 230, 230],
             lineWidth: { bottom: 0.1, top: 0, left: 0, right: 0 } as any,
+            font: FONT,
           },
           didDrawPage: () => {
             drawFooter();
@@ -526,7 +540,7 @@ export function generateReport(options: ReportOptions) {
 
   doc.setTextColor(...MID);
   doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'normal');
+  doc.setFont(FONT, 'normal');
   doc.text('All amounts are in Indian Rupees (INR).', M, y);
   y += 3;
   doc.text(`Report period: ${fmtDate(dateFrom)} to ${fmtDate(dateTo)}.`, M, y);

@@ -177,7 +177,7 @@ export default function Reports() {
 
     try {
       const { from, to } = getDateRange();
-      generateReport({
+      await generateReport({
         scope,
         dateRangeLabel: rangeLabel,
         dateFrom: from,

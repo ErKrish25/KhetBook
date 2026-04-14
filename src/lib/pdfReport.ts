@@ -3,6 +3,7 @@ import autoTable from 'jspdf-autotable';
 import type { LedgerGroup } from '../types';
 import { buildLedgerTotals, getChildren as getChildrenFromMap } from './ledger';
 import { registerGujaratiFonts, UNICODE_FONT } from './fonts/registerFonts';
+import { getUnitLabel } from './itemUnits';
 
 // ============================================================================
 // Types
@@ -24,6 +25,23 @@ interface VoucherRow {
   ledger_group_id: string | null;
 }
 
+interface VoucherLineRow {
+  id: string;
+  voucher_id: string;
+  item_id: string;
+  qty: number;
+  rate: number;
+  amount: number;
+}
+
+interface ItemRow {
+  id: string;
+  name: string;
+  unit: string;
+  category?: string;
+  rate?: number;
+}
+
 export type ReportScope = 'full' | 'expense' | 'income' | 'ledger';
 
 interface ReportOptions {
@@ -34,6 +52,8 @@ interface ReportOptions {
   farmProfile: FarmProfile;
   groups: LedgerGroup[];
   vouchers: VoucherRow[];
+  voucherLines?: VoucherLineRow[];
+  items?: ItemRow[];
   filteredGroupId?: string;
 }
 
@@ -84,6 +104,65 @@ function fmtDateShort(d: string): string {
   });
 }
 
+
+// ============================================================================
+// Quantity Helpers
+// ============================================================================
+
+/**
+ * For a set of voucher IDs, aggregate qty by unit from voucher_lines.
+ * Returns a display string like "150 Kg" or "50 Bag, 10 Litre" or "-" (no item data).
+ */
+function getQtyLabel(
+  voucherIds: string[],
+  voucherLines: VoucherLineRow[],
+  itemsMap: Map<string, ItemRow>,
+  vouchers: any[],
+): string {
+  if (voucherIds.length === 0) return '-';
+
+  // Aggregate qty by unit
+  const qtyByUnit = new Map<string, number>();
+
+  for (const vId of voucherIds) {
+    const line = voucherLines.find(vl => vl.voucher_id === vId);
+    if (line) {
+      const item = itemsMap.get(line.item_id);
+      const unit = item ? getUnitLabel(item.unit) : 'units';
+      qtyByUnit.set(unit, (qtyByUnit.get(unit) ?? 0) + line.qty);
+      continue;
+    }
+
+    // Fallback: extract quantity from auto-generated notes for past entries 
+    // Format: "ItemName — 50 × ₹320"
+    const voucher = vouchers.find(v => v.id === vId);
+    if (voucher && voucher.notes) {
+      const match = voucher.notes.match(/(?:—|-)\s*([\d.]+)\s*[x×X]\s*(?:₹|Rs)/);
+      if (match) {
+        const parsedQty = parseFloat(match[1]);
+        if (!isNaN(parsedQty)) {
+          let inferredUnit = 'units';
+          for (const item of itemsMap.values()) {
+            if (voucher.notes.toLowerCase().includes(item.name.toLowerCase())) {
+              inferredUnit = getUnitLabel(item.unit);
+              break;
+            }
+          }
+          qtyByUnit.set(inferredUnit, (qtyByUnit.get(inferredUnit) ?? 0) + parsedQty);
+        }
+      }
+    }
+  }
+
+  const parts: string[] = [];
+  for (const [unit, qty] of qtyByUnit.entries()) {
+    const qtyStr = qty % 1 === 0 ? String(qty) : qty.toFixed(2);
+    parts.push(`${qtyStr} ${unit}`);
+  }
+
+  return parts.length > 0 ? parts.join(', ') : '-';
+}
+
 // ============================================================================
 // Main generator — Tally-style professional report
 // Now async to support dynamic font loading for Gujarati/Unicode text
@@ -92,7 +171,9 @@ function fmtDateShort(d: string): string {
 export async function generateReport(options: ReportOptions) {
   const {
     scope, dateRangeLabel, dateFrom, dateTo,
-    farmProfile, groups, vouchers, filteredGroupId,
+    farmProfile, groups, vouchers,
+    voucherLines = [], items = [],
+    filteredGroupId,
   } = options;
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
@@ -107,6 +188,12 @@ export async function generateReport(options: ReportOptions) {
 
   let y = M;
   let currentPage = 1;
+
+  // Build items map for quick lookup
+  const itemsMap = new Map<string, ItemRow>();
+  for (const item of items) {
+    itemsMap.set(item.id, item);
+  }
 
   // ——————————————————————————————————————————
   // PAGE FOOTER
@@ -318,49 +405,54 @@ export async function generateReport(options: ReportOptions) {
       sectionTotal += grpTotal;
       const children = getChildren(grp.id);
 
-      const grpEntryCount = vouchers.filter(v => {
-        if (v.ledger_group_id === grp.id) return true;
-        return children.some(c => c.id === v.ledger_group_id);
-      }).length;
+      // Collect all voucher IDs for this group + children
+      const grpVoucherIds = vouchers
+        .filter(v => {
+          if (v.ledger_group_id === grp.id) return true;
+          return children.some(c => c.id === v.ledger_group_id);
+        })
+        .map(v => v.id);
+
+      const qtyLabel = getQtyLabel(grpVoucherIds, voucherLines, itemsMap, vouchers);
 
       // Group row
-      body.push([grp.name, String(grpEntryCount), fmt(grpTotal)]);
+      body.push([grp.name, qtyLabel, fmt(grpTotal)]);
       rowMeta.push({ rowType: 'group' });
 
       if (children.length > 0) {
         for (const child of children) {
           const cTotal = getTotal(child.id);
-          const cCount = vouchers.filter(v => v.ledger_group_id === child.id).length;
+          const childVoucherIds = vouchers
+            .filter(v => v.ledger_group_id === child.id)
+            .map(v => v.id);
+          const childQtyLabel = getQtyLabel(childVoucherIds, voucherLines, itemsMap, vouchers);
 
-          body.push([`    ${child.name}`, String(cCount), fmt(cTotal)]);
+          body.push([`    ${child.name}`, childQtyLabel, fmt(cTotal)]);
           rowMeta.push({ rowType: 'sub' });
         }
 
-        const directCount = vouchers.filter(v => v.ledger_group_id === grp.id).length;
-        if (directCount > 0) {
+        const directVoucherIds = vouchers
+          .filter(v => v.ledger_group_id === grp.id)
+          .map(v => v.id);
+        if (directVoucherIds.length > 0) {
           const directTotal = vouchers
             .filter(v => v.ledger_group_id === grp.id)
             .reduce((s, v) => s + Number(v.amount), 0);
-          body.push([`    (Direct)`, String(directCount), fmt(directTotal)]);
+          const directQtyLabel = getQtyLabel(directVoucherIds, voucherLines, itemsMap, vouchers);
+          body.push([`    (Direct)`, directQtyLabel, fmt(directTotal)]);
           rowMeta.push({ rowType: 'sub' });
         }
       }
     }
 
-    // Total row
-    const totalEntryCount = vouchers.filter(v => {
-      return section.ledgers.some(l => {
-        if (v.ledger_group_id === l.id) return true;
-        return getChildren(l.id).some(c => c.id === v.ledger_group_id);
-      });
-    }).length;
-    body.push([`Total`, String(totalEntryCount), fmt(sectionTotal)]);
+    // Total row — no qty in total (mixed units don't sum meaningfully)
+    body.push([`Total`, '', fmt(sectionTotal)]);
     rowMeta.push({ rowType: 'total' });
 
     // Render table
     autoTable(doc, {
       startY: y,
-      head: [['Particulars', 'Entries', 'Amount']],
+      head: [['Particulars', 'Qty / Units', 'Amount']],
       body,
       theme: 'plain',
       margin: { left: M, right: M },
@@ -377,8 +469,8 @@ export async function generateReport(options: ReportOptions) {
       },
 
       columnStyles: {
-        0: { cellWidth: contentW - 55, halign: 'left' },
-        1: { cellWidth: 18, halign: 'center', fontSize: 7, textColor: MID },
+        0: { cellWidth: contentW - 65, halign: 'left' },
+        1: { cellWidth: 28, halign: 'center', fontSize: 7, textColor: MID },
         2: { cellWidth: 37, halign: 'right' },
       },
 
@@ -480,9 +572,38 @@ export async function generateReport(options: ReportOptions) {
         for (const tx of relatedTxs) {
           runningTotal += tx.amount;
           const ledger = groups.find(g => g.id === tx.ledger_group_id);
+
+          // Get qty/unit for this transaction
+          const txLine = voucherLines.find(vl => vl.voucher_id === tx.id);
+          let qtyCol = '-';
+          if (txLine) {
+            const item = itemsMap.get(txLine.item_id);
+            const unitLabel = item ? getUnitLabel(item.unit) : '';
+            const qtyStr = txLine.qty % 1 === 0 ? String(txLine.qty) : txLine.qty.toFixed(2);
+            qtyCol = `${qtyStr} ${unitLabel}`;
+          } else if (tx.notes) {
+            // Fallback for past entries
+            const match = tx.notes.match(/(?:—|-)\s*([\d.]+)\s*[x×X]\s*(?:₹|Rs)/);
+            if (match) {
+               const parsedQty = parseFloat(match[1]);
+               if (!isNaN(parsedQty)) {
+                 const qtyStr = parsedQty % 1 === 0 ? String(parsedQty) : parsedQty.toFixed(2);
+                 let inferredUnit = '';
+                 for (const item of itemsMap.values()) {
+                   if (tx.notes.toLowerCase().includes(item.name.toLowerCase())) {
+                     inferredUnit = ` ${getUnitLabel(item.unit)}`;
+                     break;
+                   }
+                 }
+                 qtyCol = `${qtyStr}${inferredUnit}`;
+               }
+            }
+          }
+
           txBody.push([
             fmtDateShort(tx.date),
             tx.notes || ledger?.name || '-',
+            qtyCol,
             ledger?.name || '-',
             fmt(tx.amount),
           ]);
@@ -490,7 +611,7 @@ export async function generateReport(options: ReportOptions) {
 
         autoTable(doc, {
           startY: y,
-          head: [['Date', 'Description', 'Ledger', 'Amount']],
+          head: [['Date', 'Description', 'Qty', 'Ledger', 'Amount']],
           body: txBody,
           theme: 'plain',
           margin: { left: M, right: M },
@@ -507,8 +628,9 @@ export async function generateReport(options: ReportOptions) {
           columnStyles: {
             0: { cellWidth: 22, halign: 'left' },
             1: { cellWidth: 'auto' },
-            2: { cellWidth: 35 },
-            3: { cellWidth: 32, halign: 'right' },
+            2: { cellWidth: 22, halign: 'center', fontSize: 7, textColor: MID },
+            3: { cellWidth: 30 },
+            4: { cellWidth: 32, halign: 'right' },
           },
           styles: {
             fontSize: 7.5,
@@ -528,6 +650,8 @@ export async function generateReport(options: ReportOptions) {
       }
     }
   }
+
+
 
   // ——————————————————————————————————————————
   // NOTES

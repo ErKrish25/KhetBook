@@ -53,7 +53,7 @@ export default function Reports() {
       .from('profiles')
       .select('*')
       .eq('id', user?.id)
-      .single();
+      .maybeSingle();
     if (data) {
       setFarmProfile({
         name: data.farm_name || 'Khetbook',
@@ -177,6 +177,31 @@ export default function Reports() {
 
     try {
       const { from, to } = getDateRange();
+
+      // Fetch voucher_lines + items for quantity/unit display
+      let voucherLines: any[] = [];
+      let itemsData: any[] = [];
+
+      if (vouchers.length > 0) {
+        const voucherIds = vouchers.map(v => v.id);
+        
+        // Fetch voucher_lines for these vouchers
+        const { data: lines } = await supabase
+          .from('voucher_lines')
+          .select('*')
+          .in('voucher_id', voucherIds);
+
+        if (lines) voucherLines = lines;
+
+        // Fetch all items for this user
+        const { data: items } = await supabase
+          .from('items')
+          .select('id, name, unit, category, rate')
+          .eq('user_id', user?.id)
+          .is('deleted_at', null);
+        if (items) itemsData = items;
+      }
+
       await generateReport({
         scope,
         dateRangeLabel: rangeLabel,
@@ -185,6 +210,8 @@ export default function Reports() {
         farmProfile,
         groups,
         vouchers,
+        voucherLines,
+        items: itemsData,
         filteredGroupId,
       });
       toast.success('PDF downloaded successfully!');

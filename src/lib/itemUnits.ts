@@ -45,7 +45,7 @@ export const getUnitLabel = (unit: string) => {
     kg: 'Kg',
     gram: 'Gram',
     quintal: 'Qtl',
-    litre: 'Litre (L)',
+    litre: 'Litre',
     unit: 'Pcs',
     bigha: 'Bigha',
     mun: 'MUN',

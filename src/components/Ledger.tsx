@@ -22,6 +22,7 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
   const [vouchers, setVouchers] = useState<any[]>([]);
   const [view, setView] = useState<LedgerView>('tree');
   const [breadcrumb, setBreadcrumb] = useState<LedgerGroup[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedGroup, setSelectedGroup] = useState<LedgerGroup | null>(null);
   const [groupTransactions, setGroupTransactions] = useState<any[]>([]);
 
@@ -80,6 +81,44 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
   const getGroupTotal = (groupId: string) => totalsByGroupId.get(groupId) ?? 0;
   const getAllDescendantIds = (groupId: string) => descendantIdsByGroupId.get(groupId) ?? [groupId];
 
+  // ---- Search helpers ----
+  const groupById = useMemo(() => {
+    const map = new Map<string, LedgerGroup>();
+    for (const g of groups) map.set(g.id, g);
+    return map;
+  }, [groups]);
+
+  /** Build the ancestor chain for display: "Parent › Child" */
+  const getGroupPath = (group: LedgerGroup): string => {
+    const parts: string[] = [];
+    let current: LedgerGroup | undefined = group;
+    while (current) {
+      parts.unshift(current.name);
+      current = current.parent_id ? groupById.get(current.parent_id) : undefined;
+    }
+    return parts.join(' › ');
+  };
+
+  /** Build the breadcrumb chain for a group so we can navigate directly to it */
+  const buildBreadcrumbTo = (group: LedgerGroup): LedgerGroup[] => {
+    const chain: LedgerGroup[] = [];
+    let current: LedgerGroup | undefined = group;
+    while (current?.parent_id) {
+      const parent = groupById.get(current.parent_id);
+      if (parent) chain.unshift(parent);
+      current = parent;
+    }
+    return chain;
+  };
+
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return groups.filter(g => g.name.toLowerCase().includes(q));
+  }, [groups, searchQuery]);
+
+  const isSearching = searchQuery.trim().length > 0;
+
   const currentParentId = breadcrumb.length > 0 ? breadcrumb[breadcrumb.length - 1].id : null;
   const currentLevelGroups = getChildren(currentParentId);
   const incomeGroups = currentParentId === null ? currentLevelGroups.filter(g => g.type === 'income') : currentLevelGroups;
@@ -90,6 +129,22 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
     if (children.length > 0) {
       setBreadcrumb([...breadcrumb, group]);
     } else {
+      setSelectedGroup(group);
+      const allIds = new Set(getAllDescendantIds(group.id));
+      setGroupTransactions(vouchers.filter(v => v.ledger_group_id && allIds.has(v.ledger_group_id)));
+      setView('transactions');
+    }
+  };
+
+  /** Handle tapping a search result — navigate breadcrumb to the group's parent, then open it */
+  const handleSearchResultTap = (group: LedgerGroup) => {
+    setSearchQuery('');
+    const parentChain = buildBreadcrumbTo(group);
+    const children = getChildren(group.id);
+    if (children.length > 0) {
+      setBreadcrumb([...parentChain, group]);
+    } else {
+      setBreadcrumb(parentChain);
       setSelectedGroup(group);
       const allIds = new Set(getAllDescendantIds(group.id));
       setGroupTransactions(vouchers.filter(v => v.ledger_group_id && allIds.has(v.ledger_group_id)));
@@ -397,40 +452,107 @@ export default function Ledger({ onEditTransaction, refreshKey }: LedgerProps) {
           </div>
         </motion.section>
 
-        {/* Breadcrumb */}
-        {breadcrumb.length > 0 && (
-          <div className="flex items-center gap-1 flex-wrap">
-            <button onClick={() => handleBreadcrumbTap(-1)} className="text-xs font-bold text-emerald-600 active:scale-95">All</button>
-            {breadcrumb.map((bc, i) => (
-              <div key={bc.id} className="flex items-center gap-1">
-                <span className="text-stone-300 text-xs">›</span>
-                <button onClick={() => handleBreadcrumbTap(i)} className={cn("text-xs font-bold active:scale-95", i === breadcrumb.length - 1 ? "text-stone-700" : "text-emerald-600")}>{bc.name}</button>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* Search Box */}
+        <div className="relative">
+          <span className="material-symbols-outlined absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-400 text-lg pointer-events-none">search</span>
+          <input
+            id="ledger-search-input"
+            type="text"
+            value={searchQuery}
+            onChange={e => { setSearchQuery(e.target.value); }}
+            placeholder="Search ledgers & sub-ledgers…"
+            className="w-full pl-10 pr-10 py-3 bg-white border border-stone-200/60 rounded-2xl text-sm font-medium text-stone-800 placeholder:text-stone-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 transition-all"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 p-0.5 text-stone-400 hover:text-stone-600 active:scale-90 transition-all"
+              aria-label="Clear search"
+            >
+              <span className="material-symbols-outlined text-lg">close</span>
+            </button>
+          )}
+        </div>
 
-        {/* Groups */}
-        {currentParentId === null ? (
-          <>
-            <section>
-              <h4 className="font-headline font-bold text-emerald-700 text-[13px] uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                <span className="material-symbols-outlined text-base">trending_up</span>Income
-              </h4>
-              <div className="space-y-2">{incomeGroups.map((g, i) => renderGroupCard(g, i))}</div>
-            </section>
-            <section>
-              <h4 className="font-headline font-bold text-red-600 text-[13px] uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                <span className="material-symbols-outlined text-base">trending_down</span>Expense
-              </h4>
-              <div className="space-y-2">{expenseGroups.map((g, i) => renderGroupCard(g, i))}</div>
-            </section>
-          </>
-        ) : (
+        {/* Search Results */}
+        {isSearching ? (
           <section>
-            <div className="space-y-2">{currentLevelGroups.map((g, i) => renderGroupCard(g, i))}</div>
-            {currentLevelGroups.length === 0 && <p className="text-xs text-stone-400 text-center py-3">No sub-categories.</p>}
+            <p className="text-[10px] font-bold uppercase tracking-widest text-stone-400 mb-2">
+              {searchResults.length} result{searchResults.length !== 1 ? 's' : ''}
+            </p>
+            <div className="space-y-2">
+              {searchResults.map((group, i) => {
+                const total = getGroupTotal(group.id);
+                const children = getChildren(group.id);
+                const hasChildren = children.length > 0;
+                const path = getGroupPath(group);
+                return (
+                  <motion.div
+                    key={group.id}
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.025 }}
+                    onClick={() => handleSearchResultTap(group)}
+                    className="bg-white rounded-2xl border border-stone-200/60 p-3.5 flex items-center gap-3 cursor-pointer active:scale-[0.98] transition-all"
+                  >
+                    <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center shrink-0", group.type === 'income' ? 'bg-emerald-100' : 'bg-red-100')}>
+                      <span className={cn("material-symbols-outlined text-lg", group.type === 'income' ? 'text-emerald-600' : 'text-red-500')}>{group.icon || 'folder'}</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-bold text-stone-800 truncate">{group.name}</h4>
+                      <p className="text-[10px] text-stone-400 truncate">{path}</p>
+                      {hasChildren && <p className="text-[10px] text-stone-400">{children.length} sub-categories</p>}
+                    </div>
+                    <span className={cn("text-sm font-bold shrink-0", group.type === 'income' ? 'text-emerald-700' : total > 0 ? 'text-red-600' : 'text-stone-300')}>{formatCurrency(total)}</span>
+                  </motion.div>
+                );
+              })}
+              {searchResults.length === 0 && (
+                <div className="text-center py-10 bg-white rounded-2xl border border-stone-200/60">
+                  <span className="material-symbols-outlined text-4xl text-stone-300 mb-2 block">search_off</span>
+                  <p className="text-sm text-stone-400">No ledgers found for "{searchQuery}"</p>
+                </div>
+              )}
+            </div>
           </section>
+        ) : (
+          <>
+            {/* Breadcrumb */}
+            {breadcrumb.length > 0 && (
+              <div className="flex items-center gap-1 flex-wrap">
+                <button onClick={() => handleBreadcrumbTap(-1)} className="text-xs font-bold text-emerald-600 active:scale-95">All</button>
+                {breadcrumb.map((bc, i) => (
+                  <div key={bc.id} className="flex items-center gap-1">
+                    <span className="text-stone-300 text-xs">›</span>
+                    <button onClick={() => handleBreadcrumbTap(i)} className={cn("text-xs font-bold active:scale-95", i === breadcrumb.length - 1 ? "text-stone-700" : "text-emerald-600")}>{bc.name}</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Groups */}
+            {currentParentId === null ? (
+              <>
+                <section>
+                  <h4 className="font-headline font-bold text-emerald-700 text-[13px] uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-base">trending_up</span>Income
+                  </h4>
+                  <div className="space-y-2">{incomeGroups.map((g, i) => renderGroupCard(g, i))}</div>
+                </section>
+                <section>
+                  <h4 className="font-headline font-bold text-red-600 text-[13px] uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-base">trending_down</span>Expense
+                  </h4>
+                  <div className="space-y-2">{expenseGroups.map((g, i) => renderGroupCard(g, i))}</div>
+                </section>
+              </>
+            ) : (
+              <section>
+                <div className="space-y-2">{currentLevelGroups.map((g, i) => renderGroupCard(g, i))}</div>
+                {currentLevelGroups.length === 0 && <p className="text-xs text-stone-400 text-center py-3">No sub-categories.</p>}
+              </section>
+            )}
+          </>
         )}
 
         {/* Add Group FAB */}
